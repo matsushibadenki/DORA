@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/learning_rules/forward_forward.py
-# 日本語タイトル: Forward-Forward Learning Rule
+# 日本語タイトル: Forward-Forward Learning Rule Implementation
 # 目的・内容:
-#   Hinton (2022) のForward-ForwardアルゴリズムのSNN向け実装。
-#   誤差逆伝播を使わず、局所的な「Goodness（良さ）」関数の勾配に従って学習する。
-#   Positiveフェーズ（正解データ）とNegativeフェーズ（睡眠/偽データ）を切り替えて使用する。
+#   Neuromorphic OSにおける主要学習則の一つ。
+#   Hinton (2022) のForward-ForwardアルゴリズムをSNN向けに実装。
+#   Positive/Negativeフェーズによる局所的なGoodness最適化を行う。
 
 import torch
 import logging
@@ -17,9 +17,13 @@ class ForwardForwardRule(PlasticityRule):
     """
     Forward-Forward Learning Rule.
     
-    各層は独立して以下の目的関数を最適化する:
-    Pos Phase: maximize goodness
-    Neg Phase: minimize goodness
+    ニューラルネットワークの各層が独立して「Goodness」を最大化・最小化するように学習する。
+    誤差逆伝播（Backprop）を使用しないため、生物学的妥当性が高く、並列化に適している。
+    
+    Phases:
+      - Positive Phase (wake): maximize goodness (正解データ)
+      - Negative Phase (sleep/dream): minimize goodness (生成データ/ノイズ)
+      
     Goodness = sum(activity^2)
     """
 
@@ -42,16 +46,25 @@ class ForwardForwardRule(PlasticityRule):
         **kwargs: Any
     ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
         """
-        FF学習則による更新。
-        kwargsに 'phase': 'positive' | 'negative' が必要。
+        FF学習則による重み更新の計算。
+        
+        Args:
+            pre_spikes: 前シナプスニューロンのスパイク (Batch, N_pre)
+            post_spikes: 後シナプスニューロンのスパイク (Batch, N_post)
+            current_weights: 現在の重み行列
+            local_state: シナプス局所状態（トレースなど）
+            kwargs: 'phase' ('positive' or 'negative') を含む必要がある
+            
+        Returns:
+            delta_w: 重み更新量
+            logs: ログ情報
         """
         phase = kwargs.get("phase", "neutral")
         if phase == "neutral":
             return None, {}
 
         # SNNにおける「Activity」の定義:
-        # スパイクそのもの、または膜電位、あるいは短時間レートを使用する。
-        # ここではスパイク列の移動平均（レート）をActivityとして近似する。
+        # スパイクそのものだと疎すぎるため、移動平均（レート）をActivityとして近似する。
         
         if local_state is None:
             local_state = {}
@@ -69,58 +82,28 @@ class ForwardForwardRule(PlasticityRule):
         goodness = activity.pow(2).mean(dim=1) # (Batch,)
         
         # 勾配の方向決定
-        # Pos: Goodness > Threshold にしたい
-        # Neg: Goodness < Threshold にしたい
-        # Loss関数として記述すると:
-        # L_pos = log(1 + exp(-(goodness - threshold)))
-        # L_neg = log(1 + exp(+(goodness - threshold)))
+        # Positive Phase: Goodness > Threshold にしたい
+        # Negative Phase: Goodness < Threshold にしたい
         
-        # 簡易的な実装:
-        # delta_activity ~ sign * (goodness - threshold)
-        
-        sign = 1.0 if phase == "positive" else -1.0
-        
-        # 重み更新の方向:
-        # dG/dw = dG/da * da/du * du/dw
-        # u = W * x (入力電流)
-        # da/du は活性化関数の微分だが、SNNでは近似的に 1 または surrogate を使う。
-        # ここでは単純に Hebbian term (post * pre) に Goodness 誤差を乗じる。
-        
-        # Error signal: (Batch, N_post)
-        # 各ニューロンがGoodnessにどれだけ寄与したか * 全体の誤差
-        # (Batch, 1) * (Batch, N_post)
-        
-        # thresholdとの差分を誤差信号とする
-        error_signal = (goodness - self.threshold).unsqueeze(1) # (Batch, 1)
-        
-        # Positive: error < 0 (Goodnessが足りない) なら増やしたい -> sign=+1, error負 -> 全体負??
-        # 整理:
-        # maximize J = sum( (G - theta) ) for pos
-        # minimize J = sum( (G - theta) ) for neg
-        # grad = (G - theta) * activity * pre
-        
-        # 正しくは
-        # delta W = lr * sign * (goodness - threshold) * activity * pre
-        # しかしこれだと、Goodnessが高いとさらに高めようとしてしまう。
-        # Hintonの論文のSigmoid cross entropyの微分に近い形を採用する。
-        
+        # 確率的勾配の近似
+        # probs = sigmoid(Goodness - threshold)
         probs = torch.sigmoid(goodness - self.threshold)
-        # pos: 1に近づけたい -> grad ~ (1 - probs)
-        # neg: 0に近づけたい -> grad ~ (0 - probs) = -probs
         
+        # 重み更新係数 (Hintonの論文に基づく符号設計)
+        # pos: 1に近づけたい -> factor ~ (1 - probs)
+        # neg: 0に近づけたい -> factor ~ (0 - probs) = -probs
         factor = (1.0 - probs) if phase == "positive" else (-probs)
         factor = factor.unsqueeze(1).unsqueeze(2) # (Batch, 1, 1)
         
+        # Hebbian Term: activity * pre_input
         # (Batch, N_post, 1) * (Batch, 1, N_pre) -> (Batch, N_post, N_pre)
-        # activity: (Batch, N_post)
-        # pre_spikes: (Batch, N_pre)
-        
         eligibility = torch.einsum("bi,bj->bij", activity, pre_spikes)
         
+        # 更新量の計算
         delta_w_batch = factor * eligibility
         delta_w = delta_w_batch.mean(dim=0) * self.lr
 
-        # Weight Decay
+        # Weight Decay (忘却)
         delta_w -= self.w_decay * current_weights
 
         logs = {

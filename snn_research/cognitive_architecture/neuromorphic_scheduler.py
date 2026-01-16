@@ -1,8 +1,9 @@
 # ファイルパス: snn_research/cognitive_architecture/neuromorphic_scheduler.py
-# 日本語タイトル: Neuromorphic Scheduler v2.1 (Class Definitions Fix)
+# 日本語タイトル: Neuromorphic Scheduler
 # 目的・内容:
-#   ROADMAP v16.3 "Neuromorphic OS" の実装。
-#   mypyエラー修正: ProcessBidクラスを追加定義。
+#   Neuromorphic OSのリソース管理ユニット。
+#   各プロセスの「エネルギー入札（Bid）」に基づき、実行優先順位を決定する。
+#   生物学的なアストロサイト（Astrocyte）による代謝制御を模倣。
 
 import logging
 import heapq
@@ -15,7 +16,6 @@ logger = logging.getLogger(__name__)
 class ProcessBid:
     """
     各脳モジュールがスケジューラに対して提出するリソース入札情報。
-    BrainOS Simulationで使用される。
     """
     module_name: str
     priority: float  # 0.0 - 1.0
@@ -25,12 +25,12 @@ class ProcessBid:
 @dataclass(order=True)
 class BrainProcess:
     """脳内で実行されるタスク（プロセス）の定義"""
-    priority: float # 優先度 (高いほど優先、heapqは最小値を取り出すため符号反転して管理する)
+    priority: float # 優先度 (heapqは最小値を取り出すため符号反転して管理)
     name: str = field(compare=False)
     bid_amount: float = field(compare=False) # エネルギー入札額
     callback: Callable = field(compare=False) # 実行する関数
     args: tuple = field(default=(), compare=False)
-    is_interrupt: bool = field(default=False, compare=False) # 割り込みかどうか
+    is_interrupt: bool = field(default=False, compare=False) # 割り込みフラグ
 
 class NeuromorphicScheduler:
     """
@@ -43,13 +43,13 @@ class NeuromorphicScheduler:
         # 実行待ちキュー (Priority Queue)
         self.process_queue: List[BrainProcess] = []
         
-        # Simulation用: 登録されたプロセスのリスト（Bid関数などを持つ）
-        self.registered_processes: List[Any] = [] # run_phase7_os_simulation.py で使用
+        # Simulation用: 登録されたプロセスリスト
+        self.registered_processes: List[Any] = []
         
         # 実行履歴
         self.execution_log: List[str] = []
         
-        logger.info("⚖️ Neuromorphic Scheduler v2.1 initialized.")
+        logger.info("⚖️ Neuromorphic Scheduler initialized.")
 
     def register_process(self, process: Any):
         """Simulation用: プロセス定義を登録する"""
@@ -86,17 +86,14 @@ class NeuromorphicScheduler:
     def step(self, input_data: Optional[Dict[str, Any]] = None) -> List[Any]:
         """
         1サイクルのスケジューリングと実行を行う。
-        Simulationモードでは、登録されたプロセスからBidを収集してキューに入れる。
         """
         # 1. Simulation Mode: Bid Collection
         if self.registered_processes and input_data is not None:
-            context = {"energy": self.astrocyte.current_energy, "consciousness": None}
+            context = {"energy": getattr(self.astrocyte, "current_energy", 100.0), "consciousness": None}
             if self.workspace:
-                context["consciousness"] = self.workspace.conscious_broadcast_content
+                context["consciousness"] = self.workspace.get_current_thought()
 
             for proc in self.registered_processes:
-                # procは simulation script で定義された BrainProcess ラッパーを想定
-                # ここでは簡易的に duck typing
                 if hasattr(proc, 'bid_strategy'):
                     bid = proc.bid_strategy(proc.module, input_data, context)
                     if bid.priority > 0:
@@ -114,14 +111,17 @@ class NeuromorphicScheduler:
         executed_cost = 0.0
         cycle_budget = 50.0 
         
-        # 抑制状態の確認
-        diagnosis = self.astrocyte.get_diagnosis_report()
-        inhibition = diagnosis["metrics"]["inhibition_level"]
+        # 抑制状態の確認 (Astrocyteからのフィードバック)
+        if hasattr(self.astrocyte, "get_diagnosis_report"):
+            diagnosis = self.astrocyte.get_diagnosis_report()
+            inhibition = diagnosis["metrics"].get("inhibition_level", 0.0)
+        else:
+            inhibition = 0.0
         
         while self.process_queue:
             process = self.process_queue[0]
             
-            # 抑制チェック
+            # 過剰な活動に対する抑制チェック
             if inhibition > 0.8 and not process.is_interrupt:
                 heapq.heappop(self.process_queue)
                 logger.debug(f"🚫 Task {process.name} suppressed by Global Inhibition.")

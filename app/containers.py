@@ -1,7 +1,8 @@
 # ファイルパス: app/containers.py
-# 日本語タイトル: Dependency Injection Container (Syntax Fix)
+# 日本語タイトル: Dependency Injection Container (Add 'brain' alias)
 # 目的・内容:
-#   | 演算子による不正なデフォルト値指定を削除し、正しく設定ファイルから読み込むように修正。
+#   アプリケーション全体の依存関係を管理するコンテナ。
+#   NeuromorphicOSを 'brain' として参照できるように修正。
 
 import logging.config
 import torch
@@ -34,7 +35,6 @@ class AppContainer(containers.DeclarativeContainer):
 
     # --- Device Configuration ---
     # config.device が存在しない、または None の場合に "auto" を返すロジック
-    # providers.Callableを使って、解決された値(d)を受け取って判定する
     device_name_provider = providers.Callable(
         lambda d: d if d else "auto",
         d=config.device.as_(str)
@@ -49,7 +49,6 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # --- Learning Rules ---
-    # 修正: | 演算子を削除。base_config.yamlに値が定義されている前提とする。
     stdp_rule = providers.Factory(
         STDPRule,
         learning_rate=config.training.biologically_plausible.stdp.learning_rate.as_(float),
@@ -57,8 +56,6 @@ class AppContainer(containers.DeclarativeContainer):
         tau_post=config.training.biologically_plausible.stdp.tau_trace.as_(float)
     )
 
-    # Forward-Forward則はYAMLに定義がない可能性があるため、固定値のままにするか、
-    # 必要なら config.get() のような安全策をとるが、今回は固定値で初期化。
     ff_rule = providers.Factory(
         ForwardForwardRule,
         learning_rate=0.01,
@@ -71,6 +68,9 @@ class AppContainer(containers.DeclarativeContainer):
         config=config.model,
         device_name=device_name_provider
     )
+
+    # [Fix] main.py等からのアクセス用にエイリアスを設定
+    brain = neuromorphic_os
 
     # --- Application Services ---
     snn_engine = providers.Factory(

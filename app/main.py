@@ -1,144 +1,183 @@
 # ファイルパス: app/main.py
-# 日本語タイトル: Neuromorphic OS UI (with Brain Monitor)
-# 修正内容:
-#   - Gradio UIに画像出力コンポーネント(brain_monitor)を追加。
-#   - ChatServiceからの応答に含まれる統計情報を使って画像を更新するロジックを追加。
+# 日本語タイトル: DORA Observer Interface (Fix: Kernel -> Substrate)
+# 目的・内容:
+#   Neuromorphic OSの観測・操作用Webインターフェース。
+#   Gradioを使用し、脳の状態（スパイク、意識）を可視化する。
+#   v3.2対応: brain.kernelをbrain.substrateに変更。
+
+import logging
+import time
+from typing import Any, Dict, List, Tuple
 
 import gradio as gr
-import argparse
-import logging
-import sys
-import os
-import traceback
-import yaml
-import numpy as np
-
+import torch
 from app.containers import AppContainer
-# プロッターのインポート
-from snn_research.visualization.spike_plotter import SpikePlotter
 
+# ロギング設定
 logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+
 def create_ui(container: AppContainer) -> gr.Blocks:
-    """Gradio UIの構築"""
-    
-    # サービス取得 (SNNエンジンへのアクセスが必要なため、containerからOSを取得)
-    # ChatService経由ではなく、UI側で描画するためにOSインスタンスも参照
-    brain = container.neuromorphic_os()
+    """UIの構築"""
     chat_service = container.chat_service()
+    brain = container.brain()
 
-    with gr.Blocks(title="Neuromorphic OS Dashboard", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 🧠 Neuromorphic Research OS v1.0")
-        
+    with gr.Blocks(title="DORA: Neuromorphic Research OS", theme=gr.themes.Soft()) as demo:
+        gr.Markdown(
+            """
+            # 🧠 DORA: Neuromorphic Research OS Observer
+            
+            知能の「機能」ではなく「現象」を観測するためのダッシュボード。
+            """
+        )
+
         with gr.Row():
-            # 左カラム: チャット
-            with gr.Column(scale=1):
-                chatbot = gr.Chatbot(label="Consciousness Stream", height=400)
-                msg = gr.Textbox(show_label=False, placeholder="Talk to the brain...", scale=4)
+            # 左カラム: チャットとインタラクション
+            with gr.Column(scale=2):
+                chatbot = gr.Chatbot(label="Cognitive Stream (Consciousness Log)", height=500)
+                msg = gr.Textbox(
+                    label="Sensory Input (Text)",
+                    placeholder="脳への入力メッセージを入力してください...",
+                    lines=2,
+                )
                 with gr.Row():
-                    submit_btn = gr.Button("Send Input", variant="primary")
-                    clear_btn = gr.Button("Reset State")
+                    submit_btn = gr.Button("送信 (Inject Input)", variant="primary")
+                    clear_btn = gr.Button("リセット")
 
-            # 右カラム: モニター
+            # 右カラム: 脳内部状態モニタ
             with gr.Column(scale=1):
-                with gr.Tab("Brain Activity"):
-                    # 脳活動を表示する画像エリア
-                    brain_monitor = gr.Image(
-                        label="Cortical Activity (V1 | Assoc | Motor)", 
-                        type="numpy",
-                        interactive=False
-                    )
-                    stats_box = gr.Markdown("### Status: Waiting for stimuli...")
+                gr.Markdown("### 📊 Internal State Monitor")
+                
+                with gr.Group():
+                    cycle_monitor = gr.Number(label="Total Cycles", value=0)
+                    system_status = gr.Textbox(label="System Status", value="BOOTING")
+                    phase_monitor = gr.Textbox(label="Current Phase", value="Wake")
+                
+                with gr.Accordion("Neural Activity (Spikes)", open=True):
+                    spikes_monitor = gr.JSON(label="Active Neurons Count")
+                
+                with gr.Accordion("Global Workspace (Consciousness)", open=False):
+                    consciousness_monitor = gr.JSON(label="Broadcast Content")
 
-        # --- イベントハンドラ ---
+        def bot_response(message: str, history: List[Tuple[str, str]]) -> Any:
+            """
+            ユーザー入力に対する応答処理と、脳状態の観測更新。
+            """
+            if not message:
+                return history, 0, "Running", "Wake", {}, {}
 
-        def user_message(user_input, history):
-            if history is None: history = []
-            return "", history + [[user_input, None]]
-
-        def bot_response(history):
-            if not history: return history, "", None
-
-            user_input = history[-1][0]
-            past_history = history[:-1]
-            
-            # ChatServiceからストリーム応答を取得
-            stream_gen = chat_service.stream_response(user_input, past_history)
-            
+            # 1. 外部入力の処理 (ChatService経由)
+            # 実際にはここでSNNへのエンコーディングや推論が行われる
             try:
-                for updated_history, stats in stream_gen:
-                    # 最新の脳状態を取得して画像化
-                    # (本来はstream_genがstateも返すべきだが、今回はOSから直接現在の状態を覗き見る)
-                    # ※並列処理ではないため、この瞬間の状態を取得可能
-                    
-                    # 最後の forward_step で保存された prev_spikes を可視化
-                    current_state = {"spikes": brain.kernel.prev_spikes}
-                    brain_img = SpikePlotter.plot_substrate_state(current_state)
-                    
-                    # 統計テキスト作成
-                    if isinstance(stats, dict):
-                        stats_text = f"""
-                        **Cycle:** {stats.get('step', 0)}
-                        **Total Spikes:** {stats.get('total_spikes', 0)}
-                        **Motor Output:** {stats.get('last_motor', '')}
-                        """
-                    else:
-                        stats_text = str(stats)
-
-                    yield updated_history, stats_text, brain_img
-                    
+                response = chat_service.chat(message)
             except Exception as e:
-                logger.error(f"Error: {e}")
-                traceback.print_exc()
-                history[-1][1] = f"Error: {str(e)}"
-                yield history, "Error", None
+                logger.error(f"Chat service error: {e}")
+                response = f"Error: {str(e)}"
 
-        # --- イベント連携 ---
-        msg.submit(user_message, [msg, chatbot], [msg, chatbot], queue=False).then(
-            bot_response, [chatbot], [chatbot, stats_box, brain_monitor]
+            # 2. OSサイクルの実行 (擬似的な感覚入力としてランダムノイズを使用)
+            # 本来はテキストエンコーダーからのスパイクを入力する
+            dummy_sensory_input = torch.randn(1, 784)
+            observation = brain.run_cycle(dummy_sensory_input)
+
+            # 3. 状態の取得と整形
+            # [修正] brain.kernel -> brain.substrate
+            raw_spikes = brain.substrate.prev_spikes
+            spike_summary = {}
+            
+            if raw_spikes:
+                for region, tensor in raw_spikes.items():
+                    if tensor is not None:
+                        # TensorをPythonのintに変換して表示
+                        count = int(tensor.sum().item())
+                        spike_summary[region] = f"{count} spikes"
+
+            # 意識状態の取得
+            consciousness_data = {
+                "intensity": float(brain.global_workspace.get_current_thought().mean().item()),
+                "content_source": "Thinking..." # 仮
+            }
+
+            # 履歴の更新
+            history.append((message, response))
+
+            return (
+                history,
+                observation.get("cycle", 0),
+                observation.get("status", "RUNNING"),
+                observation.get("phase", "wake"),
+                spike_summary,
+                consciousness_data
+            )
+
+        # イベントハンドラの設定
+        submit_btn.click(
+            bot_response,
+            inputs=[msg, chatbot],
+            outputs=[
+                chatbot,
+                cycle_monitor,
+                system_status,
+                phase_monitor,
+                spikes_monitor,
+                consciousness_monitor,
+            ],
         )
         
-        submit_btn.click(user_message, [msg, chatbot], [msg, chatbot], queue=False).then(
-            bot_response, [chatbot], [chatbot, stats_box, brain_monitor]
+        # テキストボックスでEnterキーを押した時も送信
+        msg.submit(
+            bot_response,
+            inputs=[msg, chatbot],
+            outputs=[
+                chatbot,
+                cycle_monitor,
+                system_status,
+                phase_monitor,
+                spikes_monitor,
+                consciousness_monitor,
+            ],
         )
-        
-        clear_btn.click(lambda: [], None, chatbot, queue=False)
+
+        # 入力欄をクリア
+        msg.submit(lambda: "", None, msg) 
+        submit_btn.click(lambda: "", None, msg)
+
+        # リセットボタン
+        def reset_history():
+            return [], 0, "RESET", "Wake", {}, {}
+            
+        clear_btn.click(
+            reset_history,
+            None,
+            [chatbot, cycle_monitor, system_status, phase_monitor, spikes_monitor, consciousness_monitor],
+        )
 
     return demo
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Neuromorphic OS Interface")
-    parser.add_argument("--config", type=str, default="configs/templates/base_config.yaml", help="Path to config file")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
-    parser.add_argument("--port", type=int, default=7860, help="Server port")
-    args = parser.parse_args()
-
+    """アプリケーションのエントリーポイント"""
+    logger.info("🔌 Wiring application container...")
     container = AppContainer()
-    
-    if os.path.exists(args.config):
-        try:
-            with open(args.config, 'r') as f:
-                config_data = yaml.safe_load(f)
-            container.config.from_dict(config_data)
-        except Exception:
-            pass
-    
     container.wire(modules=[__name__])
-    
-    try:
-        os_system = container.neuromorphic_os()
-        os_system.boot()
-    except Exception as e:
-        logger.critical(f"Boot Failed: {e}")
-        return
 
-    logger.info("Constructing UI with Visualization...")
+    # 脳の起動
+    logger.info("🧠 Booting Neuromorphic OS...")
+    brain = container.brain()
+    try:
+        brain.boot()
+    except Exception as e:
+        logger.error(f"Failed to boot brain: {e}")
+
+    # UIの作成と起動
+    logger.info("🚀 Launching User Interface...")
     demo = create_ui(container)
-    demo.queue().launch(server_name=args.host, server_port=args.port, share=False)
+    
+    # 共有リンクが必要な場合は share=True に設定
+    demo.launch(server_name="127.0.0.1", server_port=7860, share=False)
+
 
 if __name__ == "__main__":
     main()
