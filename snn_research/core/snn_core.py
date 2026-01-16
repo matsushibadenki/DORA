@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/snn_core.py
-# 日本語タイトル: Spiking Neural Substrate (The Kernel)
+# 日本語タイトル: Spiking Neural Substrate (The Kernel) v3.3
 # 目的・内容:
 #   Neuromorphic OSの中核となる神経基盤。
 #   ニューロン集団とシナプス結合、および可塑性ルールを物理シミュレーションとして実行する。
@@ -195,10 +195,11 @@ class SpikingNeuralSubstrate(nn.Module):
                 src_spikes_prev = self.prev_spikes[src_name]
                 tgt_spikes_curr = current_spikes[tgt_name]
                 
-                # ここで phase などの情報を学習則に渡す
+                # ここで phase や dt などの情報を学習則に渡す
                 proj_module.apply_plasticity(
                     pre_spikes=src_spikes_prev,
                     post_spikes=tgt_spikes_curr,
+                    dt=self.dt,
                     **kwargs
                 )
 

@@ -1,13 +1,13 @@
 # ファイルパス: app/main.py
-# 日本語タイトル: DORA Observer Interface (Fix: Kernel -> Substrate)
+# 日本語タイトル: DORA Observer Interface (Gradio 4.20.0 Fix)
 # 目的・内容:
 #   Neuromorphic OSの観測・操作用Webインターフェース。
-#   Gradioを使用し、脳の状態（スパイク、意識）を可視化する。
-#   v3.2対応: brain.kernelをbrain.substrateに変更。
+#   修正: Gradio 4.20.0のエラー("Data incompatible with messages format")に対応するため、
+#   Chatbotの初期化引数はデフォルトのまま、データ形式のみを辞書形式(Messages format)に変更。
 
 import logging
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional, Union
 
 import gradio as gr
 import torch
@@ -25,6 +25,7 @@ def create_ui(container: AppContainer) -> gr.Blocks:
     chat_service = container.chat_service()
     brain = container.brain()
 
+    # theme引数の警告は出ますが、動作に支障はないため維持します
     with gr.Blocks(title="DORA: Neuromorphic Research OS", theme=gr.themes.Soft()) as demo:
         gr.Markdown(
             """
@@ -37,7 +38,12 @@ def create_ui(container: AppContainer) -> gr.Blocks:
         with gr.Row():
             # 左カラム: チャットとインタラクション
             with gr.Column(scale=2):
-                chatbot = gr.Chatbot(label="Cognitive Stream (Consciousness Log)", height=500)
+                # 修正: type引数は指定しない (TypeError回避)
+                # エラーメッセージに従い、中身のデータのみを辞書形式にする戦略をとります
+                chatbot = gr.Chatbot(
+                    label="Cognitive Stream (Consciousness Log)", 
+                    height=500
+                )
                 msg = gr.Textbox(
                     label="Sensory Input (Text)",
                     placeholder="脳への入力メッセージを入力してください...",
@@ -62,17 +68,22 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                 with gr.Accordion("Global Workspace (Consciousness)", open=False):
                     consciousness_monitor = gr.JSON(label="Broadcast Content")
 
-        def bot_response(message: str, history: List[Tuple[str, str]]) -> Any:
+        def bot_response(message: str, history: List[Any]) -> Any:
             """
             ユーザー入力に対する応答処理と、脳状態の観測更新。
+            修正: historyを辞書形式のリストとして処理
             """
+            # historyがNoneの場合は空リストで初期化
+            if history is None:
+                history = []
+
             if not message:
                 return history, 0, "Running", "Wake", {}, {}
 
             # 1. 外部入力の処理 (ChatService経由)
-            # 実際にはここでSNNへのエンコーディングや推論が行われる
             try:
-                response = chat_service.chat(message)
+                raw_response = chat_service.chat(message)
+                response = str(raw_response) # 文字列であることを保証
             except Exception as e:
                 logger.error(f"Chat service error: {e}")
                 response = f"Error: {str(e)}"
@@ -83,7 +94,7 @@ def create_ui(container: AppContainer) -> gr.Blocks:
             observation = brain.run_cycle(dummy_sensory_input)
 
             # 3. 状態の取得と整形
-            # [修正] brain.kernel -> brain.substrate
+            # brain.substrateを使用
             raw_spikes = brain.substrate.prev_spikes
             spike_summary = {}
             
@@ -100,8 +111,11 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                 "content_source": "Thinking..." # 仮
             }
 
-            # 履歴の更新
-            history.append((message, response))
+            # 履歴の更新 (辞書形式 - Messages format)
+            # エラー "Data incompatible with messages format" に対処するため
+            # {"role": "user", "content": ...} の形式を使用します。
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": response})
 
             return (
                 history,

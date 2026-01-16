@@ -12,7 +12,10 @@ pytest を使用して、tests/ ディレクトリ以下のテストを実行し
 ### **基本コマンド**
 
 * **全テスト実行**:  
-  python \-m pytest tests/
+  python \-m pytest tests/  
+  
+* **確認用**:  
+  python -m app.dashboard
 
 * ヘルスチェック (推奨):  
   プロジェクトの健全性を手軽に確認できます。  
