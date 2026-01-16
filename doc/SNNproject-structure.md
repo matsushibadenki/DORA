@@ -31,99 +31,121 @@ Brain v2.0における各モジュールの相互作用、データフロー、�
 
 ```mermaid
 graph TD
-    %% 定義: スタイル
+    %% =====================
+    %% Style Definitions
+    %% =====================
     classDef env fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
-    classDef brain fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000
+    classDef os fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000
     classDef module fill:#ffffff,stroke:#1565c0,stroke-width:1px,color:#000
+    classDef learning fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef substrate fill:#f1f8e9,stroke:#558b2f,stroke-width:2px,color:#000
+    classDef hardware fill:#eceff1,stroke:#37474f,stroke-width:2px,color:#000
     classDef memory fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000
     classDef ext fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
 
+    %% =====================
+    %% Environment
+    %% =====================
     subgraph Environment["外部環境 & 身体"]
-        Sensors["Sensory Receptor<br/>(Sensors)"]:::env
-        Actuators["Actuator<br/>(Voice/Robot)"]:::env
+        Sensors["Sensory Receptors"]:::env
+        Actuators["Actuators"]:::env
     end
 
-    subgraph Brain_v2["Brain v2.0 Core System (ArtificialBrain)"]
+    %% =====================
+    %% Neuromorphic Research OS
+    %% =====================
+    subgraph NROS["Neuromorphic Research OS"]
         direction TB
-        
-        %% 1. 入力処理
-        subgraph Input_Processing["知覚・エンコーディング"]
-            Encoder["Spike Encoder"]:::module
-            VisC["Visual Cortex<br/>(Vision)"]:::module
-            PercC["Perception Cortex<br/>(Multi-modal)"]:::module
+
+        %% ---------
+        %% Observation & Experiments
+        %% ---------
+        subgraph Experiments["Experiments / Demos / Agents"]
+            Obs["Observation & Logging"]:::os
+            Demo["Phenomenon Demos"]:::os
+            Agent["Autonomous Agents"]:::os
         end
 
-        %% 2. 意識とブロードキャスト
-        subgraph Consciousness["意識・統合 (Global Workspace)"]
-            GWT(("Global Workspace")):::brain
-            Astrocyte["Astrocyte Network<br/>(Energy/Homeostasis)"]:::module
-            Motivation["Intrinsic Motivation<br/>(Curiosity)"]:::module
+        %% ---------
+        %% Cognitive Architecture (Phenomena Layer)
+        %% ---------
+        subgraph Cognition["Cognitive Architecture (Observed Phenomena)"]
+            GWT(("Global Workspace<br/>(Broadcast Phenomenon)")):::os
+            PFC["Executive / Planner"]:::module
+            Amy["Valence / Emotion Modulation"]:::module
+            World["World Model"]:::module
         end
 
-        %% 3. 認知と記憶
-        subgraph Cognition_Memory["認知・記憶システム"]
-            PFC["Prefrontal Cortex<br/>(Executive/Planner)"]:::module
-            Hippo["Hippocampus<br/>(Short-Term/Episodic)"]:::memory
-            Cortex["Cortex<br/>(Long-Term/Knowledge)"]:::memory
-            Amy["Amygdala<br/>(Emotion/Valence)"]:::module
-            Causal["Causal Inference<br/>Engine"]:::module
-        end
-        
-        %% 4. 行動選択
-        subgraph Action_Selection["行動生成・制御"]
-            BG["Basal Ganglia<br/>(Action Selection)"]:::brain
-            Motor["Motor Cortex<br/>(Command Gen)"]:::module
-            Reflex["Reflex Module"]:::module
+        %% ---------
+        %% Memory Systems
+        %% ---------
+        subgraph Memory["Memory Systems"]
+            Hippo["Episodic / Short-term"]:::memory
+            Cortex["Semantic / Long-term"]:::memory
         end
 
-        %% データフロー: 入力 -> 知覚
-        Sensors --> Encoder
-        Encoder --> VisC
-        Encoder --> PercC
+        %% ---------
+        %% Learning Rules (Replaceable)
+        %% ---------
+        subgraph LearningRules["Local Learning Rules"]
+            FF["Forward-Forward"]:::learning
+            STDP["STDP / R-STDP"]:::learning
+            AI["Active Inference"]:::learning
+        end
 
-        %% 知覚 -> ワークスペースへの統合
-        VisC --> GWT
-        PercC --> GWT
-        
-        %% ワークスペース <-> 認知モジュール (双方向/ブロードキャスト)
-        GWT <--> PFC
-        GWT <--> Hippo
-        GWT <--> Amy
-        GWT <--> Causal
-        GWT <--> BG
-        
-        %% 記憶の連携
-        Hippo -- Consolidation --> Cortex
-        Cortex -. Retrieval .-> GWT
+        %% ---------
+        %% Spiking Neural Substrate
+        %% ---------
+        subgraph Substrate["Spiking Neural Substrate"]
+            Neuron["Neuron Models<br/>(LIF / Adaptive)"]:::substrate
+            Synapse["Synapses & Delays"]:::substrate
+            Time["Explicit Time & State"]:::substrate
+        end
 
-        %% 制御信号の流れ
-        PFC -- Top-down Control --> BG
-        Amy -- Modulation --> BG
-        Motivation --> PFC
-        
-        %% エネルギー制御
-        Astrocyte -.-> GWT
-        Astrocyte -.-> BG
-
-        %% 行動出力
-        BG --> Motor
-        Reflex --> Motor
-        Motor --> Actuators
-        
-        %% 反射バイパス
-        Sensors -.-> Reflex
+        %% ---------
+        %% Hardware Abstraction
+        %% ---------
+        subgraph HW["Neuromorphic Hardware Abstraction"]
+            Loihi["Loihi-class Event-driven Hardware"]:::hardware
+        end
     end
 
-    subgraph External_Integration["外部連携 (Agent Layer)"]
-        LLM["LLM (LangChain)"]:::ext
-        RAG["RAG System"]:::ext
-        Tools["Web Crawler / Tools"]:::ext
+    %% =====================
+    %% External Systems (Non-core)
+    %% =====================
+    subgraph External["External Systems (Non-core)"]
+        LLM["LLM / Symbolic AI"]:::ext
+        RAG["RAG / Knowledge DB"]:::ext
+        Tools["Web / Tools"]:::ext
     end
 
-    %% 外部システムとの接続
-    PFC <--> LLM
-    Cortex <--> RAG
-    RAG <--> Tools
+    %% =====================
+    %% Data & Control Flow
+    %% =====================
+
+    %% Environment I/O
+    Sensors --> Neuron
+    Neuron --> Actuators
+
+    %% Substrate relations
+    Neuron --> Synapse
+    Synapse --> Time
+
+    %% Learning rules operate on substrate
+    FF -.-> Synapse
+    STDP -.-> Synapse
+    AI -.-> Neuron
+
+    %% Cognitive phenomena emerge from substrate
+    Neuron --> GWT
+    GWT <--> PFC
+    GWT <--> Amy
+    GWT <--> World
+
+    %% Memory interaction
+    GWT --> Hippo
+    Hippo -- Consolidation --> Cortex
+    Cortex -. Retr
 ```
 
 ### **3.1 認知アーキテクチャ (Cognitive Architecture)**
