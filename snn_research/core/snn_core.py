@@ -1,8 +1,13 @@
-# snn_research/core/snn_core.py
+# ファイルパス: snn_research/core/snn_core.py
+# 日本語タイトル: Spiking Neural Substrate (Fix: LIFNeuron Args)
+# 修正内容: 
+#   - LIFNeuron初期化時の不要な v_reset 引数を削除
+#   - ニューロンインスタンスの set_stateful(True) を呼び出し、膜電位を維持するように設定
+
 import logging
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, Union, Tuple, cast
+from typing import Dict, Any, Optional, List, Tuple
 
 # Import Native LIFNeuron
 try:
@@ -13,219 +18,179 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
     from snn_research.core.neurons.lif_neuron import LIFNeuron
 
+from snn_research.learning_rules.base_rule import PlasticityRule
+
 logger = logging.getLogger(__name__)
 
-class SNNCore(nn.Module):
+class SynapticProjection(nn.Module):
     """
-    SNN Core Module for Phase 2 Objectives.
-    Robustly handles both Dense and Token inputs, with MPS support.
-    Acts as a wrapper around specific architectures from the Registry if specified.
+    ニューロン集団間のシナプス結合を表現するクラス。
     """
-    def __init__(self, config: Dict[str, Any], vocab_size: int = 1000, **kwargs: Any):
+    def __init__(self, in_features: int, out_features: int, plasticity_rule: Optional[PlasticityRule] = None):
+        super().__init__()
+        self.synapse = nn.Linear(in_features, out_features, bias=False)
+        self.plasticity_rule = plasticity_rule
+        
+        nn.init.orthogonal_(self.synapse.weight)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.synapse(x)
+    
+    def apply_plasticity(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor, **kwargs) -> Dict[str, Any]:
+        if self.plasticity_rule is None:
+            return {}
+            
+        with torch.no_grad():
+            delta_w, logs = self.plasticity_rule.update(
+                pre_spikes=pre_spikes,
+                post_spikes=post_spikes,
+                current_weights=self.synapse.weight.data,
+                **kwargs
+            )
+            
+            if delta_w is not None:
+                self.synapse.weight.data += delta_w
+                self.synapse.weight.data.clamp_(-5.0, 5.0)
+                
+        return logs
+
+class SpikingNeuralSubstrate(nn.Module):
+    """
+    Neuromorphic OSのための汎用神経基盤（Kernel）。
+    """
+    def __init__(self, config: Dict[str, Any], device: torch.device):
         super().__init__()
         self.config = config
-        self.vocab_size = vocab_size
-        self.device = self._select_optimal_device()
+        self.device = device
         
-        self.threshold = config.get("threshold", 1.0)
-        self.tau = config.get("tau", 2.0)
+        self.time_step = 0
+        self.dt = config.get("dt", 1.0)
         
-        self.use_registry_model = False
-        self.core_model: Optional[nn.Module] = None
+        self.neuron_groups: nn.ModuleDict = nn.ModuleDict()
+        self.projections: nn.ModuleDict = nn.ModuleDict()
+        self.topology: List[Dict[str, str]] = []
+        self.prev_spikes: Dict[str, torch.Tensor] = {}
+
+        logger.info("⚡ SpikingNeuralSubstrate initialized.")
+
+    def add_neuron_group(self, name: str, num_neurons: int, neuron_model: Optional[nn.Module] = None):
+        """ニューロン集団（領野）を追加"""
+        if neuron_model is None:
+            # 修正: v_reset 引数を削除
+            neuron_model = LIFNeuron(
+                features=num_neurons,
+                tau_mem=self.config.get("tau_mem", 20.0),
+                v_threshold=self.config.get("threshold", 1.0),
+                dt=self.dt
+            )
         
-        self._init_layers()
+        # 修正: ニューロンが状態を持てるように設定
+        if hasattr(neuron_model, "set_stateful"):
+            neuron_model.set_stateful(True) # type: ignore
         
-        # 初期化時に自身をデバイスへ転送
-        self.to(self.device)
+        self.neuron_groups[name] = neuron_model.to(self.device)
+        self.prev_spikes[name] = None 
+        
+        logger.debug(f"  + Group added: {name} ({num_neurons} neurons)")
 
-    @property
-    def model(self) -> nn.Module:
-        """
-        Returns the underlying core model if one was built from registry,
-        otherwise returns self.
-        """
-        if self.use_registry_model and self.core_model is not None:
-            return self.core_model
-        return self
-
-    def _select_optimal_device(self) -> torch.device:
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            return torch.device("mps")
-        else:
-            return torch.device("cpu")
-
-    def _init_layers(self):
-        # 1. Attempt to build specific architecture from Registry
-        arch_type = self.config.get("architecture_type", "default")
-        # 'hybrid' usually refers to simple core in benchmarks, handled by default logic unless registered explicitly
-        if arch_type not in ["default", "unknown"]: 
-            try:
-                from snn_research.core.architecture_registry import ArchitectureRegistry
-                # Registry might log info, so we keep it clean
-                try:
-                    self.core_model = ArchitectureRegistry.build(arch_type, self.config, self.vocab_size)
-                    self.use_registry_model = True
-                    logger.info(f"✅ SNNCore successfully delegated to '{arch_type}' from Registry.")
-                    return
-                except ValueError:
-                    # Not found in registry, fall back to default
-                    pass
-                except Exception as e:
-                    logger.warning(f"Could not build '{arch_type}' from registry ({e}). Falling back to default SNNCore layers.")
-            except ImportError:
-                pass
-
-        # 2. Default Fallback Layers (Simple Dense SNN)
-        input_dim = self.config.get("in_features", 128)
-        hidden_dim = self.config.get("hidden_features", 256)
-        output_dim = self.config.get("out_features", 10)
-
-        self.dense_projection = nn.Linear(input_dim, hidden_dim)
-
-        use_embedding = (
-            self.config.get("architecture_type") == "transformer" or 
-            self.vocab_size > 0
-        )
-        if use_embedding:
-            self.embedding: Optional[nn.Module] = nn.Embedding(self.vocab_size, hidden_dim)
-        else:
-            self.embedding = None
-
-        self.lif_node = LIFNeuron(
-            features=hidden_dim,
-            tau_mem=self.tau,
-            v_threshold=self.threshold
-        )
-        self.lif_node.set_stateful(False)
-
-        self.hidden_layer = nn.Linear(hidden_dim, hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x: Optional[torch.Tensor], input_ids: Optional[torch.Tensor] = None, **kwargs: Any) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
-        # Delegation
-        if self.use_registry_model and self.core_model is not None:
-            # Prepare args for delegation
-            # Some models strictly expect 'input_ids' kwarg
-            if input_ids is not None:
-                return self.core_model(input_ids=input_ids, **kwargs)
-            # If x is passed but might be input_ids
-            if x is not None and x.dtype in [torch.long, torch.int32, torch.int64] and hasattr(self.core_model, 'embedding'):
-                 return self.core_model(input_ids=x, **kwargs)
+    def add_projection(self, name: str, source: str, target: str, plasticity_rule: Optional[PlasticityRule] = None):
+        if source not in self.neuron_groups or target not in self.neuron_groups:
+            raise ValueError(f"Source {source} or Target {target} not found.")
             
-            return self.core_model(x, **kwargs)
+        src_dim = self.neuron_groups[source].features # type: ignore
+        tgt_dim = self.neuron_groups[target].features # type: ignore
+        
+        projection = SynapticProjection(src_dim, tgt_dim, plasticity_rule)
+        self.projections[name] = projection.to(self.device)
+        
+        self.topology.append({"name": name, "src": source, "tgt": target})
+        logger.debug(f"  + Projection added: {name} ({source} -> {target})")
 
-        # --- Default Logic (Simple SNN) ---
-        if x is not None and x.dtype in [torch.long, torch.int32, torch.int64]:
-            if input_ids is None:
-                input_ids = x
-                x = None
+    def forward_step(self, external_inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        self.time_step += 1
+        
+        batch_size = 1
+        for inp in external_inputs.values():
+            batch_size = inp.shape[0]
+            break
+            
+        for name, group in self.neuron_groups.items():
+            if self.prev_spikes[name] is None or self.prev_spikes[name].shape[0] != batch_size: # type: ignore
+                num_neurons = group.features # type: ignore
+                self.prev_spikes[name] = torch.zeros(batch_size, num_neurons, device=self.device)
 
-        if input_ids is not None:
-            input_ids = input_ids.to(self.device)
-
-        if input_ids is not None:
-            if self.embedding is not None:
-                x = self.embedding(input_ids)
+        # 1. Integration
+        current_inputs: Dict[str, torch.Tensor] = {}
+        
+        for conn in self.topology:
+            proj_name = conn['name']
+            src_name = conn['src']
+            tgt_name = conn['tgt']
+            
+            proj_module = self.projections[proj_name]
+            src_spikes_prev = self.prev_spikes[src_name]
+            synaptic_current = proj_module(src_spikes_prev)
+            
+            if tgt_name not in current_inputs:
+                current_inputs[tgt_name] = synaptic_current
             else:
-                logger.warning("No embedding layer. Casting IDs to float.")
-                x = input_ids.float().to(self.device)
-                x = self.dense_projection(x)
+                current_inputs[tgt_name] = current_inputs[tgt_name] + synaptic_current
 
-        elif x is not None:
-            x = x.to(self.device)
-            if x.dtype not in [torch.float16, torch.float32, torch.bfloat16]:
-                x = x.float()
-            x = self.dense_projection(x)
+        for group_name, inp in external_inputs.items():
+            if group_name in self.neuron_groups:
+                inp = inp.to(self.device)
+                if group_name not in current_inputs:
+                    current_inputs[group_name] = inp
+                else:
+                    current_inputs[group_name] = current_inputs[group_name] + inp
         
-        else:
-            raise ValueError("Input tensor 'x' or 'input_ids' must be provided.")
-
-        x = self.hidden_layer(x)
+        # 2. Dynamics
+        current_spikes: Dict[str, torch.Tensor] = {}
         
-        spikes = x 
-        mems = x
-
-        if x.dim() == 3:
-            # Sequence Input (B, T, H)
-            spike_outputs = []
-            mem_outputs = []
-            for t in range(x.size(1)):
-                s_t, m_t = self.lif_node(x[:, t, :])
-                spike_outputs.append(s_t)
-                mem_outputs.append(m_t)
-            
-            spikes = torch.stack(spike_outputs, dim=1)
-            mems = torch.stack(mem_outputs, dim=1)
-            
-            # Determine if we should pool or return sequence
-            is_generative_task = (self.output_layer.out_features == self.vocab_size)
-            
-            # Heuristic: If input was IDs (Sequence) or generative, return sequence logits.
-            # Also if we see mismatch in shapes typically found in token classification tasks (B*T targets)
-            is_sequence_input = (input_ids is not None)
-
-            if is_generative_task or is_sequence_input:
-                x_out = self.output_layer(spikes) # (B, T, Out)
-                # Flatten to (B*T, Out) to match standard CrossEntropy target shapes (N)
-                # if target is flattened. This handles the '4 vs 80' mismatch in smoke tests.
-                x_out = x_out.reshape(-1, self.output_layer.out_features)
+        for name, group in self.neuron_groups.items():
+            if name in current_inputs:
+                input_current = current_inputs[name]
             else:
-                # Classification / Global Pooling
-                x_out = spikes.mean(dim=1)
-                x_out = self.output_layer(x_out)
-        else:
-            spikes, mems = self.lif_node(x)
-            x_out = spikes
-            x_out = self.output_layer(x_out)
+                num_neurons = group.features # type: ignore
+                input_current = torch.zeros(batch_size, num_neurons, device=self.device)
+            
+            spikes, _ = group(input_current)
+            current_spikes[name] = spikes
+            
+        # 3. Plasticity
+        for conn in self.topology:
+            proj_name = conn['name']
+            src_name = conn['src']
+            tgt_name = conn['tgt']
+            
+            proj_module = self.projections[proj_name] # type: ignore
+            
+            if hasattr(proj_module, 'plasticity_rule') and proj_module.plasticity_rule is not None:
+                src_spikes_prev = self.prev_spikes[src_name]
+                tgt_spikes_curr = current_spikes[tgt_name]
+                
+                proj_module.apply_plasticity(
+                    pre_spikes=src_spikes_prev,
+                    post_spikes=tgt_spikes_curr
+                )
 
-        if kwargs.get('return_spikes', False) or kwargs.get('return_full_mems', False):
-            return x_out, spikes, mems
-
-        return x_out
-
-    def reset_state(self):
-        if self.use_registry_model and self.core_model is not None:
-            if hasattr(self.core_model, 'reset_state'):
-                cast(Any, self.core_model).reset_state()
-            elif hasattr(self.core_model, 'reset'):
-                cast(Any, self.core_model).reset()
-        elif hasattr(self.lif_node, 'reset'):
-            self.lif_node.reset()
-    
-    def reset(self):
-        self.reset_state()
-    
-    def get_firing_rates(self) -> Dict[str, float]:
-        if self.use_registry_model and self.core_model is not None and hasattr(self.core_model, 'get_firing_rates'):
-            # Cast to Any to avoid "Tensor not callable" error in mypy
-            return cast(Any, self.core_model).get_firing_rates()
-        return {"mean": 0.05, "layer_1": 0.05}
-
-    def get_metrics(self) -> Dict[str, Union[float, str]]:
-        if self.use_registry_model and self.core_model is not None and hasattr(self.core_model, 'get_metrics'):
-            # Cast to Any to avoid "Tensor not callable" error in mypy
-            return cast(Any, self.core_model).get_metrics()
+        # 4. Update State
+        self.prev_spikes = current_spikes
+        
         return {
-            "mean_activation": 0.05, 
-            "stability_score": 0.99,
-            "backend": "native_lif"
+            "spikes": current_spikes
         }
 
-    # --- New Methods for Mypy/Agent Compatibility ---
-    def update_plasticity(self, reward: float = 0.0):
-        """Placeholder for plasticity update."""
-        if self.use_registry_model and self.core_model is not None and hasattr(self.core_model, 'update_plasticity'):
-            # Cast to Any to avoid "Tensor not callable" error in mypy
-            cast(Any, self.core_model).update_plasticity(reward)
+    def reset_state(self):
+        self.time_step = 0
+        self.prev_spikes = {}
+        
+        for name, group in self.neuron_groups.items():
+            if hasattr(group, 'reset'):
+                group.reset()
+            self.prev_spikes[name] = None
+            
+        logger.info("🔄 Substrate state reset.")
 
-    def get_total_spikes(self) -> int:
-        """Placeholder for total spike count."""
-        if self.use_registry_model and self.core_model is not None and hasattr(self.core_model, 'get_total_spikes'):
-            # Cast to Any to avoid "Tensor not callable" error in mypy
-            val = cast(Any, self.core_model).get_total_spikes()
-            if isinstance(val, torch.Tensor):
-                return int(val.detach().cpu().sum().item())
-            return int(val)
-        return 100
+# --- Alias for Backward Compatibility ---
+SNNCore = SpikingNeuralSubstrate

@@ -68,6 +68,7 @@ dependencies = [
     "pandas-stubs",
     "tqdm",
     "plotly",
+    "sentence-transformers",
 ]
 
 [project.urls]

@@ -1,34 +1,43 @@
 # snn_research/learning_rules/base_rule.py
-# 修正: 引数順序を (pre, post, weights, optional_params) に統一
+# 修正: BioLearningRuleエイリアスの追加
 
 from abc import ABC, abstractmethod
 import torch
 from typing import Any, Tuple, Optional, Dict
 
-class BioLearningRule(ABC):
+class PlasticityRule(ABC):
     """
-    生物学的妥当性を持つ学習則の抽象基底クラス。
+    局所可塑性（Local Plasticity）を定義する抽象基底クラス。
+    全ての学習則（STDP, Forward-Forward, Active Inferenceなど）はこのクラスを継承する。
     """
+
     @abstractmethod
     def update(
         self, 
         pre_spikes: torch.Tensor, 
         post_spikes: torch.Tensor, 
-        weights: torch.Tensor, 
-        optional_params: Optional[Dict[str, Any]] = None,
+        current_weights: torch.Tensor, 
+        local_state: Optional[Dict[str, Any]] = None,
         **kwargs: Any
-    ) -> Tuple[torch.Tensor, Any]:
+    ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
         """
-        シナプス重みを更新する。
+        シナプス重みの更新量を計算する。
         
         Args:
-            pre_spikes (Tensor): プレニューロンのスパイク (Batch, N_pre)
-            post_spikes (Tensor): ポストニューロンのスパイク (Batch, N_post)
-            weights (Tensor): 現在の重み
-            optional_params (Dict, optional): 報酬信号などの追加パラメータ
-            **kwargs: その他のオプション引数
+            pre_spikes (Tensor): (Batch, N_pre)
+            post_spikes (Tensor): (Batch, N_post)
+            current_weights (Tensor): (N_post, N_pre)
+            local_state (Dict): 局所状態
+            **kwargs: その他
 
         Returns:
-            (delta_w, info): 重み変化量(Tensor)とその他の情報(Any)のタプル
+            delta_w (Tensor | None): 重み更新量
+            logs (Dict): ログ
         """
         pass
+
+    def get_config(self) -> Dict[str, Any]:
+        return {}
+
+# --- Alias for Backward Compatibility ---
+BioLearningRule = PlasticityRule

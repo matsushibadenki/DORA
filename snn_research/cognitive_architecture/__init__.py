@@ -1,8 +1,8 @@
 # snn_research/cognitive_architecture/__init__.py
 # Title: Cognitive Architecture Init
 # Description: 認知アーキテクチャコンポーネントのエクスポート定義。
+# 修正: ArtificialBrainを削除
 
-from .artificial_brain import ArtificialBrain
 from .global_workspace import GlobalWorkspace
 from .perception_cortex import PerceptionCortex
 from .motor_cortex import MotorCortex
@@ -42,7 +42,7 @@ from .theory_of_mind import TheoryOfMind
 from .explainability import ExplainabilityEngine
 
 __all__ = [
-    "ArtificialBrain",
+    # "ArtificialBrain", # 削除
     "GlobalWorkspace",
     "PerceptionCortex",
     "MotorCortex",
@@ -59,10 +59,10 @@ __all__ = [
     "ReasoningEngine",
     "MetaCognitiveSNN",
     "SleepConsolidator",
-    "HierarchicalMemorySystem",  # Added
-    "AdaptiveFrankenMoE",       # Added
-    "DeltaLearningSystem",      # Added
-    "NeuroSymbolicBridge",      # Added
+    "HierarchicalMemorySystem",
+    "AdaptiveFrankenMoE",
+    "DeltaLearningSystem",
+    "NeuroSymbolicBridge",
     "IntrinsicMotivationSystem",
     "CausalInferenceEngine",
     "EmergentCognitiveSystem",
@@ -72,10 +72,8 @@ __all__ = [
     "HDCEngine",
     "HDCReasoningAgent",
     "TsetlinMachine",
-    # Phase 2.1
     "CuriosityKnowledgeIntegrator",
     "create_curiosity_integrator",
-    # Phase 3.1
     "TheoryOfMind",
     "ExplainabilityEngine",
 ]

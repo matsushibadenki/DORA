@@ -1,225 +1,131 @@
 # ファイルパス: app/deployment.py
-# matsushibadenki/snn4/snn_research/deployment.py
-# Title: SNN推論エンジン
-# Description: 訓練済みSNNモデルをロードし、テキスト生成のための推論を実行するクラス。
-# BugFix: モデルのパスを絶対パスに解決してからロードすることで、ファイルが見つからない問題を解消。
-# BugFix: state_dictのキーから 'model.' プリフィックスを削除し、読み込みエラーを修正。
-# BugFix: IndentationErrorの修正。
-# BugFix: generateメソッドの max_len が None になる TypeError を修正 (最終対策 v5)。
-#
-# 改善 (v6):
-# - doc/SNN開発：基本設計思想.md (セクション6.1, 引用[16]) に基づき、
-#   動的推論（SNN Cutoff）を generate メソッドに実装。
-#   確信度が閾値を超えた場合に早期終了するロジックを追加。
+# 日本語タイトル: SNN Inference Engine (Full Loop: Sense -> Think -> Act)
+# 修正内容:
+#   - SimpleMotorActuatorを導入し、Motor野の活動に基づく応答生成を実装。
+#   - 仮の応答ロジックを廃止。
 
 import torch
-import torch.nn as nn # Added for type hint
-import torch.nn.functional as F  # ◾️◾️◾️ 追加 ◾️◾️◾️
-from pathlib import Path
-from transformers import AutoTokenizer
-# typing から time をインポート
-from typing import Iterator, Optional, Dict, Any, List, Tuple, cast # Added cast
-# import time  # time をインポート
-from omegaconf import DictConfig, OmegaConf
-from snn_research.core.snn_core import SNNCore  # SNNCoreをインポート
-import logging  # logging をインポート
+import logging
+import time
+from typing import Iterator, Tuple, Dict, Any, List, Optional
+from omegaconf import DictConfig
 
-# logging を設定 (すでにある場合は不要)
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# OS Core
+from snn_research.core.neuromorphic_os import NeuromorphicOS
+# I/O Modules
+from snn_research.io.spike_encoder import TextSpikeEncoder
+from snn_research.io.actuator import SimpleMotorActuator
+
 logger = logging.getLogger(__name__)
-
-
-def get_auto_device() -> str:
-    """実行環境に最適なデバイスを自動的に選択する。"""
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 class SNNInferenceEngine:
     """
-    学習済みSNNモデルをロードして推論を実行するエンジン。
+    Neuromorphic OSのラッパー。
+    [Input Text] -> Encoder -> [SNN Kernel] -> Motor Spikes -> Actuator -> [Output Text]
     """
-
-    def __init__(self, config: DictConfig):
-        if isinstance(config, dict):
-            config = OmegaConf.create(config)
-
+    def __init__(self, brain: NeuromorphicOS, config: DictConfig):
+        self.brain = brain
         self.config = config
-        device_str = OmegaConf.select(
-            config, "device", default="auto")  # selectで安全に取得
-        self.device = get_auto_device() if device_str == "auto" else device_str
-
-        # ◾️◾️◾️ 追加: SNN Cutoff 設定 ◾️◾️◾️
-        self.cutoff_enabled: bool = OmegaConf.select(
-            config, "deployment.cutoff.enabled", default=True)
-        self.cutoff_threshold: float = OmegaConf.select(
-            config, "deployment.cutoff.threshold", default=0.95)
-        self.cutoff_min_steps: int = OmegaConf.select(
-            config, "deployment.cutoff.min_steps", default=5)
-        if self.cutoff_enabled:
-            logger.info(
-                f"⚡️ 動的推論 (SNN Cutoff) が有効です (閾値: {self.cutoff_threshold}, 最小ステップ: {self.cutoff_min_steps})")
-        # ◾️◾️◾️ ここまで ◾️◾️◾️
-
         self.last_inference_stats: Dict[str, Any] = {}
+        
+        # 1. Sensory Encoder (Text -> Spikes)
+        input_dim = self.brain.config.get("input_dim", 784)
+        self.encoder = TextSpikeEncoder(
+            num_neurons=input_dim, 
+            device=str(self.brain.device)
+        )
+        
+        # 2. Motor Actuator (Spikes -> Text)
+        output_dim = self.brain.config.get("output_dim", 10)
+        self.actuator = SimpleMotorActuator(output_dim=output_dim)
+        
+        logger.info("🤖 Inference Engine ready with Sensory-Motor loop.")
 
-        # 先にTokenizerをロードしてvocab_sizeを取得
-        tokenizer_path = OmegaConf.select(
-            config, "data.tokenizer_name", default="gpt2")  # selectで安全に取得
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-        except Exception as e:
-            logger.error(
-                f"Could not load tokenizer from {tokenizer_path}. Error: {e}")
-            self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        # vocab_sizeを渡してSNNCoreを初期化
-        vocab_size = len(self.tokenizer)
-        model_config = OmegaConf.select(
-            config, "model", default=config)  # selectで安全に取得
-        if model_config is None:
-            logger.warning(
-                "Model config is None in SNNInferenceEngine init. Using empty config.")
-            model_config = OmegaConf.create({})  # 空のDictConfigを作成
-        self.model = SNNCore(model_config, vocab_size=vocab_size)
-
-        model_path_str = OmegaConf.select(
-            config, "model.path", default=None)  # selectで安全に取得
-
-        if model_path_str:
-            model_path = Path(model_path_str).resolve()
-
-            if model_path.exists():
-                try:
-                    checkpoint = torch.load(
-                        model_path, map_location=self.device)
-                    state_dict_to_load: Dict[str, Any]
-                    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                        state_dict_to_load = checkpoint['model_state_dict']
-                    elif isinstance(checkpoint, dict):  # state_dict そのものの場合
-                        state_dict_to_load = checkpoint
-                    else:
-                        raise TypeError(
-                            f"Unsupported checkpoint format: {type(checkpoint)}")
-
-                    new_state_dict = {
-                        k.replace('model.', ''): v for k, v in state_dict_to_load.items()}
-
-                    # Cast model.model to nn.Module to fix mypy error
-                    missing_keys, unexpected_keys = cast(nn.Module, self.model.model).load_state_dict(
-                        new_state_dict, strict=False)
-                    if missing_keys:
-                        logger.warning(
-                            f"Missing keys when loading state dict: {missing_keys}")
-                    if unexpected_keys:
-                        logger.warning(
-                            f"Unexpected keys when loading state dict: {unexpected_keys}")
-
-                    logger.info(f"✅ Model loaded from {model_path}")
-                except RuntimeError as e:
-                    logger.warning(
-                        f"⚠️ Warning: Failed to load state_dict, possibly due to architecture mismatch: {e}. Using an untrained model.")
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ Warning: An error occurred while loading model state_dict: {e}. Using an untrained model.")
-            else:
-                logger.warning(
-                    f"⚠️ Warning: Model file not found at {model_path}. Using an untrained model.")
-        else:
-            logger.warning(
-                "⚠️ Warning: No model path specified in config. Using an untrained model.")
-
-        self.model.to(self.device)
-        self.model.eval()
-
-    def generate(self, prompt: str, max_len: Optional[int], stop_sequences: Optional[List[str]] = None) -> Iterator[Tuple[str, Dict[str, float]]]:
+    def generate(
+        self, 
+        prompt: str, 
+        max_len: int = 100, 
+        temperature: float = 0.7,
+        stop_sequences: Optional[List[str]] = None
+    ) -> Iterator[Tuple[str, Dict[str, Any]]]:
         """
-        プロンプトに基づいてテキストと統計情報をストリーミング生成する。
-        max_len が None の場合にデフォルト値を設定する。
-        SNN Cutoffロジックを実装。
+        思考・行動生成ループ。
         """
-        if max_len is None:
-            default_max_len = 100
-            logger.warning(
-                f"max_len was None, using default value: {default_max_len}")
-            max_len = default_max_len
-        elif not isinstance(max_len, int) or max_len <= 0:
-            default_max_len = 100
-            logger.warning(
-                f"Invalid max_len value ({max_len}), using default value: {default_max_len}")
-            max_len = default_max_len
+        if stop_sequences is None:
+            stop_sequences = []
 
-        tokenizer_callable = getattr(self.tokenizer, "__call__", None)
-        if not callable(tokenizer_callable):
-            raise TypeError("Tokenizer is not callable.")
-        input_ids = tokenizer_callable(prompt, return_tensors="pt")[
-            "input_ids"].to(self.device)
+        total_spikes = 0
+        start_time = time.time()
+        
+        # 応答の蓄積用
+        accumulated_response = ""
+        last_action = ""
 
-        total_spikes = 0.0
-        # start_time = time.time()
+        # SNNは「状態」を持つため、入力が続いている間、少しずつ反応が変わる可能性がある
+        # ここでは max_len 回のステップを実行し、Motor野が強く反応した時に言葉を発する
+        
+        step_interval = 10 # 何ステップごとにActuatorを確認するか
 
         for i in range(max_len):
-            # loop_start_time = time.time()
-            with torch.no_grad():
-                outputs, avg_spikes_tensor, _ = self.model(
-                    input_ids, return_spikes=True)
+            # --- 1. Sense: テキストからスパイク生成 ---
+            # 持続的な入力として与える
+            input_spikes_seq = self.encoder.forward(prompt, duration=1)
+            input_tensor = input_spikes_seq.squeeze(1)
 
-            avg_spikes = avg_spikes_tensor.item() if isinstance(
-                avg_spikes_tensor, torch.Tensor) else 0.0
-            total_spikes += avg_spikes * input_ids.shape[1]
+            # --- 2. Process: OSカーネル実行 ---
+            cycle_result = self.brain.run_cycle(input_tensor)
+            
+            # --- 3. Observe: 内部状態の集計 ---
+            substrate_state = cycle_result.get("substrate_state", {})
+            current_spikes_dict = substrate_state.get("spikes", {})
+            
+            # 全スパイク数カウント
+            step_spikes = 0
+            for area_name, spikes in current_spikes_dict.items():
+                if spikes is not None:
+                    step_spikes += int(spikes.sum().item())
+            total_spikes += step_spikes
 
-            next_token_logits = outputs[:, -1, :]
+            # --- 4. Act: 行動生成 (Motor野の読み取り) ---
+            # 毎ステップ出力するとうるさいので、一定間隔または発火閾値で出力
+            chunk = ""
+            
+            if i % step_interval == 0:
+                # Motor野のスパイクを取得
+                motor_spikes = current_spikes_dict.get("Motor")
+                
+                if motor_spikes is not None:
+                    # Actuatorでデコード
+                    action = self.actuator.decode(motor_spikes)
+                    
+                    # 無言(...) 以外で、かつ直前と同じ言葉でなければ出力
+                    if action != "..." and action != last_action:
+                        chunk = action + " "
+                        last_action = action
+                        accumulated_response += chunk
 
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓SNN Cutoff 実装↓◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-            # 確信度（Softmaxの最大値）を計算
-            probabilities = F.softmax(next_token_logits, dim=-1)
-            confidence, next_token_id = torch.max(probabilities, dim=-1)
-            next_token_id = next_token_id.unsqueeze(-1)
-
-            if self.cutoff_enabled and confidence.item() > self.cutoff_threshold and i >= self.cutoff_min_steps:
-                logger.info(
-                    f"⚡️ SNN Cutoff発動: ステップ {i} で確信度 {confidence.item():.2%} が閾値 {self.cutoff_threshold:.2%} を超過。")
-                try:
-                    new_token = self.tokenizer.decode(next_token_id.item())
-                except Exception as e:
-                    logger.error(
-                        f"Error decoding token ID {next_token_id.item()}: {e}")
-                    new_token = "[Decode Error]"
-
-                # current_duration = time.time() - start_time
-                current_stats = {
-                    "total_spikes": total_spikes, "cutoff_step": i}
-                yield new_token, current_stats
-                break  # Cutoffによりループを早期終了
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑SNN Cutoff 実装↑◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-
-            if next_token_id.item() == getattr(self.tokenizer, 'eos_token_id', None):
+            # 初回のみフィードバック表示 (デモ用)
+            if i == 0:
+                chunk = "(Thinking...) "
+            
+            # ストリーミング用にyield
+            stats = {
+                "total_spikes": total_spikes,
+                "step": i + 1,
+                "step_spikes": step_spikes,
+                "last_motor": last_action
+            }
+            
+            yield chunk, stats
+            
+            # 停止条件
+            if any(stop in accumulated_response for stop in stop_sequences):
                 break
+            
+            # 少しWaitを入れてアニメーションさせる
+            time.sleep(0.01)
 
-            try:
-                new_token = self.tokenizer.decode(next_token_id.item())
-            except Exception as e:
-                logger.error(
-                    f"Error decoding token ID {next_token_id.item()}: {e}")
-                new_token = "[Decode Error]"
-
-            if stop_sequences and any(seq in new_token for seq in stop_sequences):
-                break
-
-            # current_duration = time.time() - start_time
-            current_stats = {"total_spikes": total_spikes}
-            yield new_token, current_stats
-
-            input_ids = torch.cat([input_ids, next_token_id], dim=1)
-
-            # loop_duration = time.time() - loop_start_time
-
-        self.last_inference_stats = {"total_spikes": total_spikes}
+        self.last_inference_stats = {
+            "total_spikes": total_spikes,
+            "duration": time.time() - start_time
+        }

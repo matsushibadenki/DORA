@@ -1,14 +1,12 @@
 # ファイルパス: snn_research/cognitive_architecture/som_feature_map.py
-# Title: Self-Organizing Feature Map (Robust)
-# Description:
-# - STDP学習結果の受け取り処理に安全対策を追加。
-# - デバイス不整合の防止を追加。
+# 修正: STDPRule対応、update戻り値処理の修正
 
 import torch
 import torch.nn as nn
 from typing import Tuple
 
-from snn_research.learning_rules.stdp import STDP
+# 新しいクラス名をインポート (エイリアスSTDPも使えるが、明示的に新しい方を使う)
+from snn_research.learning_rules.stdp import STDPRule
 
 class SomFeatureMap(nn.Module):
     """
@@ -22,7 +20,8 @@ class SomFeatureMap(nn.Module):
         
         self.weights = nn.Parameter(torch.rand(self.input_dim, self.num_neurons))
         
-        self.stdp = STDP(**stdp_params)
+        # STDPRuleを使用。kwargsで余計なパラメータは吸収される。
+        self.stdp = STDPRule(**stdp_params)
         
         self.neuron_pos = torch.stack(torch.meshgrid(
             torch.arange(map_size[0]),
@@ -49,7 +48,6 @@ class SomFeatureMap(nn.Module):
         """
         STDPと近傍学習則に基づき、重みを更新する。
         """
-        # デバイス同期
         if pre_spikes.device != self.weights.device:
             pre_spikes = pre_spikes.to(self.weights.device)
         if post_spikes.device != self.weights.device:
@@ -58,28 +56,27 @@ class SomFeatureMap(nn.Module):
         winner_index = torch.argmax(post_spikes)
         
         # 1. 近傍関数
-        # neuron_pos も同じデバイスにある必要がある
         if self.neuron_pos.device != self.weights.device:
             self.neuron_pos = self.neuron_pos.to(self.weights.device)
             
         distances = torch.linalg.norm(self.neuron_pos - self.neuron_pos[winner_index], dim=1)
         neighborhood_factor = torch.exp(-distances**2 / (2 * (self.map_size[0]/4)**2))
         
-        # 2. STDPベースの重み更新 (安全対策追加)
+        # 2. STDPベースの重み更新
+        # STDPRule.update は (delta_w, logs) を返す
+        # self.weights.T を渡しているため、返り値 dw_transposed は (N_post, N_pre)
         result = self.stdp.update(pre_spikes, post_spikes, self.weights.T)
         
-        if result is None:
-            # 学習則が何も返さなかった場合は更新スキップ
+        # 結果の検証
+        dw_transposed, _ = result
+        
+        if dw_transposed is None:
             return
 
-        dw_transposed, _ = result
-        dw = dw_transposed.T
+        dw = dw_transposed.T # (N_pre, N_post)
         
         # 3. 近傍関数で学習率を変調
-        # shape合わせ: neighborhood_factor (N_out) -> (1, N_out) or similar?
-        # dw is (N_in, N_out), neighborhood_factor is (N_out)
-        # Broadcasting: (N_in, N_out) * (N_out) -> Works
-        
+        # dw: (N_in, N_out), neighborhood_factor: (N_out)
         modulated_dw = dw * neighborhood_factor
         
         self.weights.data += modulated_dw

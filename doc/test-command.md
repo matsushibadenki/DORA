@@ -20,7 +20,11 @@ pytest を使用して、tests/ ディレクトリ以下のテストを実行し
 
 * **全テストスクリプト実行**:  
   python scripts/tests/run\_all\_tests.py
-
+  
+    
+### **システム起動コマンド**  
+    python -m app.main
+    
 ### **カテゴリ別テスト**
 
 * **スモークテスト (簡易動作確認)**:  

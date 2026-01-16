@@ -1,38 +1,39 @@
 # snn_research/learning_rules/__init__.py
-# 修正: ProbabilisticHebbian を正しいモジュールからインポート
 
 from typing import Dict, Any
-from .base_rule import BioLearningRule
-from .reward_modulated_stdp import RewardModulatedSTDP, EmotionModulatedSTDP
-from .causal_trace import CausalTraceCreditAssignmentEnhancedV2 
-from .probabilistic_hebbian import ProbabilisticHebbian
+from .base_rule import PlasticityRule
+from .stdp import STDPRule
+from .forward_forward import ForwardForwardRule
 
-def get_bio_learning_rule(rule_name: str = "reward_modulated_stdp", config: Dict[str, Any] = {}, **kwargs: Any) -> BioLearningRule:
+# エイリアス
+BioLearningRule = PlasticityRule
+
+def get_bio_learning_rule(rule_name: str = "stdp", config: Dict[str, Any] = {}, **kwargs: Any) -> PlasticityRule:
     """
-    Args:
-        rule_name: 学習則の名前 (位置引数またはキーワード引数)
-        config: 設定辞書
-        **kwargs: その他の引数 (nameなど) を吸収
+    Legacy factory function for backward compatibility.
     """
-    # kwargsにnameが含まれている場合、それを優先
     if 'name' in kwargs:
         rule_name = kwargs['name']
         
-    params = config.get("params", {})
-
-    if rule_name == "reward_modulated_stdp":
-        return RewardModulatedSTDP(**params)
+    rule_name = rule_name.lower()
     
-    elif rule_name == "emotion_modulated_stdp":
-        return EmotionModulatedSTDP(**params)
-    
-    elif rule_name == "causal_trace" or rule_name == "bio_causal_sparse":
-        # paramsを結合
-        combined = {**params, **config.get("causal_trace", {})}
-        return CausalTraceCreditAssignmentEnhancedV2(**combined)
+    if "stdp" in rule_name or "causal" in rule_name:
+        params = config.get("params", {})
+        # 古いSTDPパラメータとの整合性を保つための変換ロジックが必要ならここに追加
+        return STDPRule(**params)
         
-    elif rule_name == "probabilistic_hebbian":
-        return ProbabilisticHebbian(**params)
-    
+    elif "forward" in rule_name:
+        params = config.get("params", {})
+        return ForwardForwardRule(**params)
+        
     else:
-        return RewardModulatedSTDP()
+        # デフォルトでSTDPを返す
+        return STDPRule()
+
+__all__ = [
+    "PlasticityRule",
+    "STDPRule",
+    "ForwardForwardRule",
+    "get_bio_learning_rule", # 再公開
+    "BioLearningRule",
+]

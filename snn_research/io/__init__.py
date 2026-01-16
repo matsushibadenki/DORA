@@ -1,19 +1,34 @@
 # ファイルパス: snn_research/io/__init__.py
-# (更新)
+# Title: IO Module Init
+# 修正: NeuromorphicDataset -> NeuromorphicDataFactory に変更
 
-from .sensory_receptor import SensoryReceptor
-# --- ▼ 修正 ▼ ---
-from .spike_encoder import SpikeEncoder, DifferentiableTTFSEncoder
+from .spike_encoder import (
+    SpikeEncoder, 
+    RateEncoder, 
+    LatencyEncoder, 
+    DeltaEncoder, 
+    DifferentiableTTFSEncoder,
+    HybridTemporal8BitEncoder,
+    TextSpikeEncoder
+)
 from .spike_decoder import SpikeDecoder
-from .actuator import Actuator
-# --- ▲ 修正 ▲ ---
+from .neuromorphic_dataset import NeuromorphicDataFactory, MockDVSGenerator
+from .universal_encoder import UniversalEncoder
+
+# 後方互換性用エイリアス (必要であれば)
+NeuromorphicDataset = NeuromorphicDataFactory
 
 __all__ = [
-    "SensoryReceptor",
     "SpikeEncoder",
-    # --- ▼ 修正 ▼ ---
+    "RateEncoder",
+    "LatencyEncoder",
+    "DeltaEncoder",
     "DifferentiableTTFSEncoder",
+    "HybridTemporal8BitEncoder",
+    "TextSpikeEncoder",
     "SpikeDecoder",
-    "Actuator"
-    # --- ▲ 修正 ▲ ---
+    "NeuromorphicDataFactory", # Updated
+    "MockDVSGenerator",        # Added
+    "NeuromorphicDataset",     # Kept as alias
+    "UniversalEncoder",
 ]

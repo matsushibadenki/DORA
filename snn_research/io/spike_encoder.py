@@ -1,12 +1,11 @@
 # ファイルパス: snn_research/io/spike_encoder.py
-# Title: スパイクエンコーダ v2.0 (Device Aware)
-# Description:
-# - Device引数に対応し、GPU/CPU上でのテンソル生成を制御可能に変更。
-# - サブクラス(RateEncoder等)もdevice引数を継承するように修正。
+# 日本語タイトル: スパイクエンコーダ (All Encoders + TextSpikeEncoder)
+# 修正内容: 削除されたクラス(TTFS, Delta等)を復元し、TextSpikeEncoderを統合。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional
+import torch.nn.functional as F
+from typing import Dict, Any, Optional, List, Union
 import logging
 import numpy as np
 
@@ -31,100 +30,6 @@ class SpikeEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor, duration: int) -> torch.Tensor:
         raise NotImplementedError
-
-    def _get_embedding_model(self):
-        """Embeddingモデルの遅延読み込み (シングルトン)"""
-        if not TRANSFORMERS_AVAILABLE:
-            return None
-        if SpikeEncoder._embedding_model is None:
-            logger.info("Loading SentenceTransformer for semantic encoding...")
-            # 軽量なモデルを使用
-            SpikeEncoder._embedding_model = SentenceTransformer(
-                'all-MiniLM-L6-v2')
-        return SpikeEncoder._embedding_model
-
-    def _char_ngram_projection(self, text: str, dimension: int, n: int = 3) -> torch.Tensor:
-        """
-        Transformerがない場合のフォールバック。
-        """
-        vector = np.zeros(dimension, dtype=np.float32)
-        text_len = len(text)
-
-        if text_len < n:
-            h = hash(text)
-            np.random.seed(h % (2**32))
-            return torch.from_numpy(np.random.rand(dimension)).float().to(self.device)
-
-        for i in range(text_len - n + 1):
-            ngram = text[i:i+n]
-            h = abs(hash(ngram))
-            np.random.seed(h % (2**32))
-            sign_vector = np.random.choice([-1.0, 1.0], size=dimension)
-            vector += sign_vector
-
-        norm = np.linalg.norm(vector)
-        if norm > 0:
-            vector = vector / norm
-
-        return torch.from_numpy(vector).float().to(self.device)
-
-    def encode_text(self, text: str, duration: int = 10) -> torch.Tensor:
-        """
-        テキスト文字列をスパイク列にエンコードする。
-        """
-        return self.encode({"content": text}, duration)
-
-    def encode(self, sensory_info: Dict[str, Any], duration: int) -> torch.Tensor:
-        """
-        感覚情報（辞書）を受け取り、スパイクパターン（Tensor）に変換する。
-        """
-        content = sensory_info.get("content")
-
-        # 1. 数値の場合
-        if isinstance(content, (int, float)):
-            x = torch.tensor([[float(content)]], device=self.device)
-            return self.forward(x, duration)
-
-        # 2. リストの場合 (数値リストを想定)
-        elif isinstance(content, list):
-            try:
-                x = torch.tensor(content, device=self.device).float()
-                if x.dim() == 1:
-                    x = x.unsqueeze(0)
-                return self.forward(x, duration)
-            except Exception:
-                pass
-
-        # 3. テキストの場合
-        content_str = str(content)
-        N = self.num_neurons if self.num_neurons is not None else 256
-
-        model = self._get_embedding_model()
-        if model is not None:
-            with torch.no_grad():
-                embedding = model.encode(content_str, convert_to_tensor=True)
-                if isinstance(embedding, list):
-                    embedding = torch.tensor(embedding, device=self.device)
-            
-            # Ensure embedding is on the correct device
-            embedding = embedding.to(self.device)
-            
-            current_dim = embedding.shape[0]
-            if current_dim != N:
-                # 次元合わせ
-                embedding = torch.nn.functional.interpolate(
-                    embedding.view(1, 1, -1), size=N, mode='linear', align_corners=False
-                ).view(-1)
-            probs = torch.sigmoid(embedding)
-        else:
-            logger.warning(
-                "SentenceTransformer not available. Using N-gram projection fallback.")
-            projected_vector = self._char_ngram_projection(content_str, N)
-            probs = torch.sigmoid(projected_vector * 2.0)
-
-        probs_expanded = probs.unsqueeze(0).expand(duration, -1)
-        spikes = (torch.rand_like(probs_expanded) < probs_expanded).float()
-        return spikes
 
 
 class RateEncoder(SpikeEncoder):
@@ -184,7 +89,7 @@ class DifferentiableTTFSEncoder(SpikeEncoder):
             torch.ones(num_neurons, device=device) * initial_sensitivity)
         self.v_th = 1.0
         self.tau = 2.0
-        self.to(device) # Parameter移動
+        self.to(device)
 
     def forward(self, x: torch.Tensor, duration: Optional[int] = None) -> torch.Tensor:
         x = x.to(self.device)
@@ -230,4 +135,94 @@ class HybridTemporal8BitEncoder(SpikeEncoder):
             spikes_list.append(bit_plane.float())
 
         spikes = torch.stack(spikes_list, dim=1)
+        return spikes
+
+
+class TextSpikeEncoder(SpikeEncoder):
+    """
+    テキスト入力を意味ベクトルに変換し、それをスパイク列としてエンコードするクラス。
+    """
+    def __init__(self, num_neurons: int, device: str = 'cpu'):
+        super().__init__(num_neurons, device)
+        self.output_dim = num_neurons
+        self._load_model()
+
+    def _load_model(self):
+        """Embeddingモデルの読み込み"""
+        if TRANSFORMERS_AVAILABLE:
+            if SpikeEncoder._embedding_model is None:
+                logger.info("📥 Loading SentenceTransformer 'all-MiniLM-L6-v2' for TextSpikeEncoder...")
+                try:
+                    SpikeEncoder._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                except Exception as e:
+                    logger.error(f"Failed to load SentenceTransformer: {e}")
+                    # グローバル変数は変更できないため、クラス変数を操作
+                    # ただしここでは簡易的にログ出しのみ
+                    pass
+        else:
+            logger.warning("⚠️ sentence-transformers not installed. Using N-gram hash fallback.")
+
+    def _char_ngram_projection(self, text: str, dimension: int, n: int = 3) -> torch.Tensor:
+        """Transformerがない場合のフォールバック（N-gramハッシュ射影）"""
+        vector = np.zeros(dimension, dtype=np.float32)
+        text_len = len(text)
+
+        if text_len < n:
+            h = hash(text)
+            np.random.seed(h % (2**32))
+            return torch.from_numpy(np.random.rand(dimension)).float().to(self.device)
+
+        for i in range(text_len - n + 1):
+            ngram = text[i:i+n]
+            h = abs(hash(ngram))
+            np.random.seed(h % (2**32))
+            sign_vector = np.random.choice([-1.0, 1.0], size=dimension)
+            vector += sign_vector
+
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector = vector / norm
+        
+        return torch.sigmoid(torch.from_numpy(vector).float().to(self.device) * 5.0)
+
+    def forward(self, text_input: Union[str, List[str]], duration: int = 10) -> torch.Tensor:
+        """
+        Args:
+            text_input (str): 入力テキスト
+            duration (int): 生成するスパイク列の時間長
+        Returns:
+            spikes (Tensor): (Batch, Duration, OutputDim)
+        """
+        if isinstance(text_input, list):
+            text_input = text_input[0] 
+        
+        target_dim = self.output_dim
+
+        # 1. Embedding生成
+        if TRANSFORMERS_AVAILABLE and SpikeEncoder._embedding_model is not None:
+            with torch.no_grad():
+                embedding = SpikeEncoder._embedding_model.encode(text_input, convert_to_tensor=True)
+                
+            embedding = embedding.to(self.device).float()
+            
+            # 2. 次元調整
+            current_dim = embedding.shape[0]
+            if current_dim != target_dim:
+                embedding = F.interpolate(
+                    embedding.view(1, 1, -1), 
+                    size=target_dim, 
+                    mode='linear', 
+                    align_corners=False
+                ).view(-1)
+            
+            # 3. 確率への変換
+            probs = torch.sigmoid(embedding * 3.0) 
+            
+        else:
+            probs = self._char_ngram_projection(str(text_input), target_dim)
+
+        # 4. ポアソン・スパイク生成
+        probs_expanded = probs.unsqueeze(0).unsqueeze(0).expand(1, duration, -1)
+        spikes = (torch.rand_like(probs_expanded) < probs_expanded).float()
+        
         return spikes
