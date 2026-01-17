@@ -1,4 +1,3 @@
-from snn_research.models.visual_cortex import VisualCortex
 import torch
 import torch.nn.functional as F
 from torchvision import datasets, transforms
@@ -10,6 +9,16 @@ from tqdm import tqdm
 # Update path BEFORE importing project modules
 sys.path.append(os.path.abspath(os.path.join(
     os.path.dirname(__file__), '../../../')))
+
+# Verify path update
+# print(f"DEBUG: sys.path augmented: {sys.path[-1]}")
+
+try:
+    from snn_research.models.visual_cortex import VisualCortex
+except ImportError as e:
+    print(f"Import Error: {e}")
+    print(f"Current sys.path: {sys.path}")
+    sys.exit(1)
 
 
 def flatten_tensor(x):
@@ -76,8 +85,6 @@ def run_spiking_ff_mnist():
     print("Initializing Visual Cortex...")
     model = VisualCortex(device=torch.device(device), config=config)
     model.to(device)  # Ensure module parameters are on device
-
-    # model.layer_names is used by some tools? No, here we drive it manually.
 
     # 4. Training Loop
     print(f"Start SNN Training for {config['epochs']} epochs...")

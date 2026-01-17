@@ -42,12 +42,15 @@
 
 ---
 
-### 1. Universal Neuron Substrate（最優先）
+### 1. Universal Neuron Substrate & Stability (最優先)
 
 - [ ] **Neuron / Synapse / Spike を最小単位として再定義**
 - [ ] 膜電位・閾値・回復変数・スパイク履歴の**標準状態モデル化**
 - [ ] 時間ステップではなく **イベント駆動更新**を原則とする
 - [ ] 行列・バッチ前提APIの完全排除
+- [ ] **Learning Stability Benchmark**
+  - [ ] Target: > 95% Accuracy consistency across runs
+  - [ ] Standardized `VisualCortex` model implementation
 
 ---
 
@@ -182,7 +185,7 @@
 **観測対象として再統合**する。
 
 - `run_spiking_ff_demo.py`
-  → Visual Cortex（FF）標準実装
+  → **Visual Cortex (FF)** 標準実装へリファクタリング進行中 (Target: `snn_research/models/visual_cortex.py`)
 
 - `run_free_will_demo.py`
   → 意思決定遷移の観測シナリオ

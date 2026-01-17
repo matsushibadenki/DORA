@@ -93,7 +93,8 @@ OSカーネルや各モジュールが正常に動作しているかを確認し
 
 ### **Benchmarks**
 
-* **レイテンシ測定**: python scripts/benchmarks/benchmark\_latency.py
+* **レイテンシ測定**: python scripts/benchmarks/benchmark_latency.py
+* **学習安定性 (Stability)**: python benchmarks/stability_benchmark_v2.py --runs 5
 
 ## **5\. デバッグ・診断**
 

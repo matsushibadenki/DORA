@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/Users/littlebuddha/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/Users/littlebuddha/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/Users/Shared/Program/python310/DORA/app/dashboard.py", line 228, in <module>
+    dashboard.launch()
+  File "/Users/Shared/Program/python310/DORA/app/dashboard.py", line 223, in launch
+    demo.launch(share=share, server_port=7861)
+  File "/Users/Shared/Program/python310/.venv/lib/python3.10/site-packages/gradio/blocks.py", line 2720, in launch
+    ) = http_server.start_server(
+  File "/Users/Shared/Program/python310/.venv/lib/python3.10/site-packages/gradio/http_server.py", line 182, in start_server
+    raise OSError(
+OSError: Cannot find empty port in range: 7861-7861. You can specify a different port by setting the GRADIO_SERVER_PORT environment variable or passing the `server_port` parameter to `launch()`.
+📊 Launching File-based Dashboard...

@@ -4,6 +4,12 @@
 #   Neuromorphic Research OSの状態をリアルタイムで観測するためのダッシュボード。
 #   Gradio 5.xの仕様(Messages formatがデフォルトかつtype引数なし)に対応。
 
+from app.containers import AppContainer
+import torch
+import gradio as gr
+from typing import Any, Dict, List, Tuple, Optional, Union
+import time
+import logging
 import sys
 import os
 
@@ -15,13 +21,6 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 # ---------------------------------------------
 
-import logging
-import time
-from typing import Any, Dict, List, Tuple, Optional, Union
-
-import gradio as gr
-import torch
-from app.containers import AppContainer
 
 # ロギング設定
 logging.basicConfig(
@@ -37,7 +36,7 @@ def create_ui(container: AppContainer) -> gr.Blocks:
     chat_service = container.chat_service()
     brain = container.brain()
 
-    with gr.Blocks(title="DORA: Neuromorphic Research OS", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="DORA: Neuromorphic Research OS") as demo:
         # ヘッダーエリア
         gr.Markdown(
             """
@@ -51,14 +50,14 @@ def create_ui(container: AppContainer) -> gr.Blocks:
             # 左カラム: 入出力実験エリア
             with gr.Column(scale=2):
                 gr.Markdown("### 📡 Signal Injection & Conscious Log")
-                
+
                 # チャットボットUIを「意識ストリーム」として再定義
                 # Gradio 5.xではデフォルトでMessages format(辞書形式)を期待するため、type引数は不要
                 chatbot = gr.Chatbot(
-                    label="Global Workspace Stream (Broadcast History)", 
+                    label="Global Workspace Stream (Broadcast History)",
                     height=500
                 )
-                
+
                 with gr.Group():
                     msg = gr.Textbox(
                         label="Sensory Input Injection (Text/Concept)",
@@ -66,22 +65,25 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                         lines=1,
                     )
                     with gr.Row():
-                        submit_btn = gr.Button("Inject Signal", variant="primary")
+                        submit_btn = gr.Button(
+                            "Inject Signal", variant="primary")
                         clear_btn = gr.Button("Reset State")
 
             # 右カラム: 生体/神経状態モニタエリア
             with gr.Column(scale=1):
                 gr.Markdown("### 📊 Bio-Metrics & Substrate")
-                
+
                 with gr.Group():
                     cycle_monitor = gr.Number(label="Total Cycles", value=0)
-                    status_monitor = gr.Textbox(label="OS Status", value="BOOTING")
-                    phase_monitor = gr.Textbox(label="Circadian Phase", value="Wake")
-                
+                    status_monitor = gr.Textbox(
+                        label="OS Status", value="BOOTING")
+                    phase_monitor = gr.Textbox(
+                        label="Circadian Phase", value="Wake")
+
                 # アコーディオンで詳細情報を表示
                 with gr.Accordion("🧠 Neural Activity (Firing Rate)", open=True):
                     spikes_monitor = gr.JSON(label="Region Activity")
-                
+
                 with gr.Accordion("🧪 Neuromodulators & Energy", open=True):
                     bio_monitor = gr.JSON(label="Homeostasis")
 
@@ -110,12 +112,12 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                 logger.error(f"Signal processing error: {e}")
                 response_text = f"Error: {str(e)}"
 
-            # 2. OSサイクルの実行 
+            # 2. OSサイクルの実行
             # (本来はエンコーディングされたスパイク列だが、ここではデモ用にランダムノイズ+入力強度)
             # 入力がある場合、V1への入力強度を高める
             input_intensity = 1.0 if message else 0.1
             dummy_sensory_input = torch.randn(1, 784) * input_intensity
-            
+
             # 脳の1ステップ実行
             observation = brain.run_cycle(dummy_sensory_input)
 
@@ -126,11 +128,13 @@ def create_ui(container: AppContainer) -> gr.Blocks:
 
             # 生体指標
             bio_data = observation.get("bio_metrics", {})
-            
+
             # 履歴更新 (Messages format / 辞書形式)
             if message:
-                history.append({"role": "user", "content": f"[INJECT] {message}"})
-                history.append({"role": "assistant", "content": f"[BROADCAST] {response_text}"})
+                history.append(
+                    {"role": "user", "content": f"[INJECT] {message}"})
+                history.append(
+                    {"role": "assistant", "content": f"[BROADCAST] {response_text}"})
             else:
                 # 入力がない場合の自発活動ログ（必要であればここでhistoryに追加）
                 pass
@@ -159,7 +163,7 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                 synapse_monitor
             ],
         )
-        
+
         msg.submit(
             bot_response,
             inputs=[msg, chatbot],
@@ -175,19 +179,20 @@ def create_ui(container: AppContainer) -> gr.Blocks:
         )
 
         # 入力欄クリア
-        msg.submit(lambda: "", None, msg) 
+        msg.submit(lambda: "", None, msg)
         submit_btn.click(lambda: "", None, msg)
 
         # リセット処理
         def reset_system():
             logger.info("System Reset Requested.")
-            brain.boot() # OS再起動
+            brain.boot()  # OS再起動
             return [], 0, "RESET", "Wake", {}, {}, 0
-            
+
         clear_btn.click(
             reset_system,
             None,
-            [chatbot, cycle_monitor, status_monitor, phase_monitor, spikes_monitor, bio_monitor, synapse_monitor],
+            [chatbot, cycle_monitor, status_monitor, phase_monitor,
+                spikes_monitor, bio_monitor, synapse_monitor],
         )
 
     return demo
@@ -210,7 +215,8 @@ def main():
     # UI起動
     logger.info("🚀 Launching Research Observer...")
     demo = create_ui(container)
-    demo.launch(server_name="127.0.0.1", server_port=7860, share=False)
+    # Gradio 6.0: theme parameter moved to launch()
+    demo.launch(server_name="127.0.0.1", share=False, theme=gr.themes.Soft())
 
 
 if __name__ == "__main__":

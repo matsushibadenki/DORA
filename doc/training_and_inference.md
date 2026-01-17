@@ -22,7 +22,18 @@ Neuromorphic OS v6.0以降では、以下のプロセスで学習が進行しま
 ### **実行コマンド**
 
 \# 記憶定着と構造変化の実験（推奨）  
-python scripts/experiments/learning/run\_memory\_consolidation.py
+# 記憶定着と構造変化の実験（推奨）  
+python scripts/experiments/learning/run_memory_consolidation.py
+
+### **学習安定性へのフォーカス (Stability Benchmark)**
+
+本OSは最終的に「学習し続ける（破綻しない）」ことを重視しています。
+リファクタリングされた `VisualCortex` モデルの学習安定性を検証するには、以下のベンチマークを使用します。
+
+python benchmarks/stability_benchmark_v2.py --runs 5 --epochs 5 --threshold 90
+
+* **Goal:** 複数回の試行で一貫して高い精度 (>90-95%) を維持すること。
+* **Metrics:** 成功率 (Success Rate), 平均精度 (Mean Accuracy), 精度の標準偏差 (Std Dev).
 
 ### **パラメータ調整**
 

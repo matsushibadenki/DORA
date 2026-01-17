@@ -61,19 +61,20 @@ graph TD
 プロジェクトは「OS」としての構成に移行中です。
 
 SNN/  
-├── app/                  \# アプリケーション層 (Dashboard, API)  
-├── configs/              \# 実験・モデル設定ファイル (Hydra/OmegaConf)  
-├── doc/                  \# 設計書・ロードマップ  
-├── scripts/              \# 実行スクリプト群  
-│   ├── demos/            \# 個別機能のデモ (Visual, Brain, etc.)  
-│   ├── experiments/      \# 長期実験・学習スクリプト  
-│   └── runners/          \# OSとしての統合実行ランナー  
-├── snn\_research/         \# コアライブラリ (The Kernel)  
-│   ├── core/             \# ニューロン、ネットワーク基盤  
-│   ├── cognitive\_architecture/ \# 脳部位モジュール (GWS, Cortex...)  
-│   ├── training/         \# 学習トレーナー (FF, STDP...)  
-│   └── visualization/    \# 観測・可視化ツール  
-└── tests/                \# ユニットテスト
+├── app/                  # アプリケーション層 (Dashboard, API)
+├── benchmarks/           # 安定性・性能評価ベンチマーク
+├── configs/              # 実験・モデル設定ファイル (Hydra/OmegaConf)
+├── doc/                  # 設計書・ロードマップ
+├── scripts/              # 実行スクリプト群
+│   ├── demos/            # 個別機能のデモ (Legacy/Comparison)
+│   ├── experiments/      # 長期実験・学習スクリプト
+│   └── runners/          # OSとしての統合実行ランナー
+├── snn_research/         # コアライブラリ (The Kernel)
+│   ├── core/             # ニューロン、ネットワーク基盤
+│   ├── cognitive_architecture/ # 脳部位モジュール (GWS, Cortex...)
+│   ├── training/         # 学習トレーナー (FF, STDP...)
+│   └── visualization/    # 観測・可視化ツール
+└── tests/                # ユニットテスト
 
 ## **🚀 Getting Started**
 
@@ -86,15 +87,26 @@ cd SNN
 \# 依存関係のインストール (uv推奨)  
 uv pip install \-r requirements.txt  
 \# または  
-pip install \-r requirements.txt
+pip install \-r requirements.txt  
+  
+python -m app.main & python -m app.dashboard  
+  
 
+  
 ### **2\. Running the Visual Cortex Demo (Forward-Forward)**
 
 現在、最も安定して動作する視覚野モジュール（Forward-Forward学習）のデモです。
 
-python scripts/demos/visual/run\_spiking\_ff\_demo.py
+python scripts/demos/visual/run_spiking_ff_demo.py
 
-### **3\. Exploring the "Phenomenon"**
+### **3. Stability Benchmark (New)**
+
+システムの学習安定性を検証するためのベンチマークです。
+`VisualCortex` モデルの学習安定性が 95% を超えることを目標としています。
+
+python benchmarks/stability_benchmark_v2.py --runs 5 --epochs 5
+
+### **4. Exploring the "Phenomenon"**
 
 意識の萌芽を観測するための統合シミュレーション（開発中）:
 
@@ -105,9 +117,10 @@ python scripts/demos/visual/run\_spiking\_ff\_demo.py
 
 詳細は [doc/ROADMAP.md](https://www.google.com/search?q=doc/ROADMAP.md) を参照してください。
 
-* **Phase 1**: コアエンジンの統一（Universal Substrateの確立）  
-* **Phase 2**: ハイブリッド実験場の構築（FF \+ STDP \+ Active Inference）  
-* **Phase 3**: 観測システムの構築（意識・クオリアの観測）  
+* **Phase 1**: コアエンジンの統一と安定性 (Universal Substrate & Stability)
+  * Target: Learning Stability > 95%
+* **Phase 2**: ハイブリッド実験場の構築 (FF + STDP + Active Inference)
+* **Phase 3**: 観測システムの構築 (意識・クオリアの観測)
 * **Phase 4**: ハードウェア連携と大規模シミュレーション
 
 ## **🤝 Contribution**
