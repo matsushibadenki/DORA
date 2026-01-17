@@ -31,6 +31,7 @@ logger = logging.getLogger("Recipe_MNIST")
 
 # --- モデル定義 ---
 
+
 class MNIST_SpikingCNN(BaseModel):
     """
     MNIST (1x28x28) に特化したSpiking CNNモデル。
@@ -144,7 +145,7 @@ def run_mnist_training(config_override: Optional[Dict[str, Any]] = None):
         "lr": 1e-3,
         "time_steps": 4,
         "num_classes": 10,
-        "dataset_path": "./data/mnist",
+        "dataset_path": os.path.join(os.path.dirname(__file__), "../../data/mnist"),
         "output_json": "workspace/results/best_mnist_metrics.json",  # 出力先
         "neuron_config": {
             "tau_mem": 2.0,

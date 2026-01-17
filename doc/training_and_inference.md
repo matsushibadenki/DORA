@@ -1,95 +1,129 @@
-# **Neuromorphic Research OS: 学習・観測ガイド (v6.0)**
+# Neuromorphic Research OS: 学習・観測ガイド (v6.1)
 
-本プロジェクトにおける「学習（Training）」は、単なるパラメータ最適化ではなく、\*\*「経験に伴う脳構造の自己組織化」**と定義されます。 また、「推論（Inference）」は静的な計算ではなく、**「リアルタイムの神経活動現象」\*\*として扱われます。
+本プロジェクトにおける「学習（Training）」は、単なるパラメータ最適化ではなく、**「経験に伴う脳構造の自己組織化」**と定義されます。また、「推論（Inference）」は静的な計算ではなく、**「リアルタイムの神経活動現象」**として扱われます。
 
-このドキュメントでは、Neuromorphic OS上での学習プロセスの回し方と、その観測方法について解説します。
+このドキュメントでは、Neuromorphic OS上での学習プロセスの回し方、観測方法、そして利用可能なデモやレシピについて解説します。
 
-## **1\. OS上での学習サイクル (Structural Learning)**
+## 1. ファイル保存場所の変更 (v6.1～)
 
-Neuromorphic OS v6.0以降では、以下のプロセスで学習が進行します。このプロセスは自動化されており、ユーザーは環境（入力データや報酬）を提供するだけです。
+プロジェクト構成の整理に伴い、生成されるファイルは以下のディレクトリに分類されます。
 
-### **学習のメカニズム**
+*   **`data/`**: データセット (MNIST/CIFAR-10など)
+*   **`models/`**: 学習済みモデルやチェックポイント
+*   **`workspace/`**: 
+    *   `runtime_state/`: システムの実行状態、ログ、プログレス
+    *   `benchmarks/`: ベンチマーク結果
+    *   `results/`: その他の実験結果
 
-1. **覚醒 (Wake):**  
-   * **Forward-Forward則 / STDP:** 局所的な可塑性によりシナプス強度が変化。  
-   * **ドーパミン (Dopamine):** 正解や報酬により可塑性が一時的に強化される（強化学習）。  
-   * **エピソード記録:** 重要な入力パターンが海馬バッファに一時保存される。  
-2. **睡眠 (Sleep):**  
-   * **海馬リプレイ (Replay):** 覚醒時のパターンが高速再生（夢）され、記憶が皮質へ転送される。  
-   * **シナプス恒常性 (Pruning):** 不要・微弱なシナプスが物理的に削除される（忘却による整理）。  
-   * **シナプス生成 (Synaptogenesis):** 新しい接続がランダムに芽生え、新たな学習の準備をする。
+## 2. OS上での学習サイクル (Structural Learning)
 
-### **実行コマンド**
+Neuromorphic OSは自動化された学習サイクルを持ちます。
 
-\# 記憶定着と構造変化の実験（推奨）  
-# 記憶定着と構造変化の実験（推奨）  
+### 学習のメカニズム
+
+1.  **覚醒 (Wake):**
+    *   **Forward-Forward則 / STDP:** 局所的な可塑性による学習。
+    *   **ドーパミン (Dopamine):** 報酬ベースの強化。
+    *   **エピソード記録:** 海馬への一時保存。
+2.  **睡眠 (Sleep):**
+    *   **海馬リプレイ (Replay):** 記憶の長期定着（皮質への転送）。
+    *   **シナプス恒常性 (Pruning):** 不要な接続の削除（忘却）。
+    *   **シナプス生成 (Synaptogenesis):** 新たな接続の生成。
+
+### 実行コマンド
+
+**記憶定着と構造変化の実験（推奨）:**
+```bash
 python scripts/experiments/learning/run_memory_consolidation.py
+```
 
-### **学習安定性へのフォーカス (Stability Benchmark)**
+### 学習安定性へのフォーカス (Stability Benchmark)
 
-本OSは最終的に「学習し続ける（破綻しない）」ことを重視しています。
-リファクタリングされた `VisualCortex` モデルの学習安定性を検証するには、以下のベンチマークを使用します。
+学習が破綻せず、安定して精度を維持できるかを検証するためのベンチマークです。
 
+```bash
 python benchmarks/stability_benchmark_v2.py --runs 5 --epochs 5 --threshold 90
+```
 
-* **Goal:** 複数回の試行で一貫して高い精度 (>90-95%) を維持すること。
-* **Metrics:** 成功率 (Success Rate), 平均精度 (Mean Accuracy), 精度の標準偏差 (Std Dev).
+*   **Metric:** 成功率、平均精度、安定性スコア。
+*   **Progress:** `workspace/runtime_state/benchmark_progress.json`
+*   **Results:** `workspace/benchmarks/stability_benchmark_results.json`
 
-### **パラメータ調整**
+## 3. 観測と分析 (Observation)
 
-学習の挙動を変えたい場合は、スクリプト内の config や os\_kernel の設定を変更します。
+学習の結果は、正解率だけでなく**脳の状態変化**として評価します。
 
-* max\_energy: 覚醒時間の長さを制御。  
-* os\_kernel.reward(amount=...): ドーパミンの放出量を調整。
+### 主要な観測指標
 
-## **2\. 観測と分析 (Observation)**
+*   **Synapse Count:** 接続総数の減少（刈り込み）と増加（生成）。
+*   **Energy / Fatigue:** 脳のエネルギー代謝リズム。
+*   **Consciousness Level:** 情報統合の強度。
 
-学習の結果は「正解率」という数値だけでなく、**脳の状態変化**として評価します。
+### 可視化
 
-### **主要な観測指標**
+```bash
+python scripts/visualization/plot_memory_learning.py
+```
 
-* **Synapse Count (Syn):** 脳内の有効な接続総数。睡眠中に減少し（刈り込み）、覚醒後期に増加する（生成）ダイナミクスが健全です。  
-* **Energy / Fatigue:** 代謝のリズムが保たれているか。  
-* **Consciousness Level:** Global Workspaceへの情報統合強度。
+## 4. 単体モデルの学習 (Component Training)
 
-### **可視化**
+特定のタスクに特化したモデル（Spiking CNNなど）の学習レシピです。
 
-実験後に生成されるJSONデータをグラフ化します。
+### 高精度レシピ (Recipes)
 
-python scripts/visualization/plot\_memory\_learning.py
+`snn_research/recipes/` 以下のスクリプトを使用します。
 
-**成功のサイン:**
+*   **MNIST 学習:**
+    ```bash
+    python -c "from snn_research.recipes.mnist import run_mnist_training; run_mnist_training()"
+    ```
+    *   結果: `workspace/results/best_mnist_metrics.json`, `best_mnist_snn.pth`
+*   **CIFAR-10 学習:**
+    ```bash
+    python -c "from snn_research.recipes.cifar10 import run_cifar10_training; run_cifar10_training()"
+    ```
 
-グラフ上で「シナプス数がV字回復している（減ってから増える）」かつ「その後に精度（Accuracy）が向上している」場合、構造的可塑性が正しく機能しています。
+### 汎用トレーナー
 
-## **3\. 単体モデルの学習 (Component Training)**
+```bash
+PYTHONPATH=. python scripts/training/train.py --model_config configs/models/small.yaml
+```
 
-OSカーネル全体ではなく、特定のSNNモデル（Spiking CNNなど）単体の性能を評価したい場合に使用する、従来型の学習スクリプトです。これらはPyTorch標準の学習ループに近い形式で動作します。
+## 5. デモンストレーション (Demos)
 
-### **A. 高精度レシピ (Recipes)**
+様々な脳機能のデモスクリプトが `scripts/demos/` に用意されています。
 
-snn\_research/recipes/ 以下のスクリプトは、特定のタスク（MNIST, CIFAR-10）に特化したチューニング済みモデルを学習させます。
+### 視覚・知覚 (Visual)
+*   **Spiking Forward-Forward Demo:**
+    ```bash
+    python scripts/demos/visual/run_spiking_ff_demo_v2.py
+    ```
+    *   True SNNでのForward-Forward学習デモ。モデルは `models/checkpoints/` に保存されます。
 
-* **MNIST 学習**:  
-  python \-c "from snn\_research.recipes.mnist import run\_mnist\_training; run\_mnist\_training()"
+### 脳機能・認知 (Brain)
+*   **World Model:** `scripts/demos/brain/run_world_model_demo.py`
+*   **Conscious Broadcast:** `scripts/demos/brain/run_conscious_broadcast_demo.py`
+*   **Curiosity:** `scripts/demos/brain/run_curiosity_demo.py`
 
-* **CIFAR-10 学習**:  
-  python \-c "from snn\_research.recipes.cifar10 import run\_cifar10\_training; run\_cifar10\_training()"
+### 学習・記憶 (Learning)
+*   **Sleep Cycle:** `scripts/demos/learning/run_sleep_cycle_demo.py`
+*   **Continual Learning:** `scripts/demos/learning/run_continual_learning_demo.py`
 
-### **B. 汎用トレーナー**
+## 6. Webインターフェース (App Demo)
 
-設定ファイルを指定して任意のモデルを学習させます。
+学習した脳の挙動をブラウザ上で確認できます。
 
-PYTHONPATH=. python scripts/training/train.py \--model\_config configs/models/small.yaml
+### 起動コマンド
 
-## **4\. Webインターフェース (App Demo)**
+```bash
+python app/main.py
+```
+*   アクセス: http://localhost:8000
 
-学習した脳の挙動をブラウザ上でインタラクティブに確認するためのWebサーバーです。
+### 統合デモ (Unified Perception)
 
-* **起動コマンド:**  
-  python app/main.py
+視覚・言語・運動野の連携デモを行います。
 
-  起動後、ブラウザで http://localhost:8000 にアクセスします。  
-* **統合デモ (Unified Perception):**  
-  視覚・言語・運動野の連携デモを行います。  
-  python app/unified\_perception\_demo.py  
+```bash
+python app/unified_perception_demo.py
+```

@@ -1,105 +1,143 @@
-# **Neuromorphic Research OS: 実験・テストコマンドガイド (v6.0)**
+# Neuromorphic Research OS: 実験・テストコマンドガイド (v6.1)
 
-このドキュメントでは、**Neuromorphic Research OS (NROS)** 上での実験、観測、およびシステム検証を行うためのコマンドをまとめています。
+本ドキュメントでは、**Neuromorphic Research OS (NROS)** のすべての機能を検証・テストするためのコマンドを網羅しています。
 
-本プロジェクトは「タスクを解くAI」ではなく、\*\*「知能現象（覚醒・睡眠・可塑性）を観測するOS」\*\*へと移行しました。
+開発者、リサーチャーは、変更を加えた後にこれらのテストを実行し、システムの健全性と性能を確認してください。
 
-したがって、従来の単発デモよりも、**ライフサイクルを通じた観測実験**が推奨されます。
+## ⚠️ 実行環境について
 
-## **⚠️ 実行環境について**
+*   **ルートディレクトリ**: すべてのコマンドはプロジェクトルート (`DORA/`) で実行してください。
+*   **ファイル出力**: テスト結果やログは主に `workspace/` ディレクトリに出力されます。
 
-すべてのコマンドは、プロジェクトのルートディレクトリで実行してください。
+## 1. システム健全性・基本機能テスト (System Health)
 
-モジュールパスの問題を避けるため、各スクリプト内では自動的にパス調整を行っていますが、エラーが出る場合は以下のように実行してください。
+まず最初に実行すべき、システムの基本的な動作確認コマンドです。
 
-\# Mac/Linux  
-export PYTHONPATH=.  
-python scripts/...
+### プロジェクト健全性チェック
+必須ファイル、ディレクトリ構造、依存ライブラリの確認を行います。
 
-\# Windows  
-$env:PYTHONPATH="."  
-python scripts/...
+```bash
+python scripts/tests/run_project_health_check.py
+```
 
-## **1\. 標準観測実験 (Core Experiments)**
+### 全ユニットテスト実行 (Pytest)
+各モジュールの単体テストを一括実行します。
 
-Neuromorphic OS v6.0 カーネルを使用した、推奨される標準実験です。
+```bash
+# Pytestを使用 (推奨)
+python -m pytest tests/
 
-### **A. 覚醒・睡眠サイクル実験 (Basic Life Cycle)**
+# または専用ランナーを使用
+python scripts/tests/run_all_tests.py
+```
 
-脳のエネルギー代謝（Astrocyte）と意識レベル（Global Workspace）の相互作用により、自律的に覚醒と睡眠を繰り返す様子を観測します。
+### コンパイラ・ハードウェア抽象化層テスト
+SNNモデルのコンパイルとデバイス割り当てのテストです。
 
-* **実行コマンド:**  
-  python scripts/experiments/run\_research\_cycle.py
+```bash
+python scripts/tests/run_compiler_test.py
+```
 
-* **観測項目:** エネルギー準位、疲労度、意識レベルの自発的な振動。  
-* **出力:** runtime\_state/experiment\_history.json
+## 2. 性能・安定性ベンチマーク (Benchmarks)
 
-### **B. 記憶定着と構造的可塑性 (Memory & Plasticity)**
+学習の安定性とシステムの処理速度を定量的に評価します。
 
-学習（Wake）→ 睡眠（Sleep）→ 再学習（Wake）のサイクルを実行します。
+### 学習安定性ベンチマーク (Stability Benchmark)
+SNNが破綻せずに学習できるかを検証します。リファクタリング後の必須テストです。
 
-睡眠中の「海馬リプレイ（夢）」と「シナプス刈り込み（Pruning）/生成（Genesis）」による脳構造の変化を観測します。
+```bash
+# 標準設定 (5回の試行)
+python benchmarks/stability_benchmark_v2.py --runs 5 --epochs 5 --threshold 90
+```
+*   **出力**: `workspace/benchmarks/stability_benchmark_results.json`
 
-* **実行コマンド:**  
-  python scripts/experiments/learning/run\_memory\_consolidation.py
+### レイテンシ測定
+推論の応答速度を測定します。
 
-* **観測項目:** 認識精度(Accuracy)、ドーパミン報酬、有効シナプス数の物理的増減。  
-* **出力:** runtime\_state/memory\_experiment\_history.json
+```bash
+python scripts/benchmarks/benchmark_latency.py
+```
 
-## **2\. データの可視化 (Visualization)**
+### ベンチマークスイート
+複数のベンチマークをまとめて実行します。
 
-実験で生成されたJSONログを解析し、グラフとして出力します。
+```bash
+python scripts/benchmarks/run_benchmark_suite.py
+```
 
-* **基本サイクルの可視化:**  
-  (run\_research\_cycle.py の結果を表示)  
-  python scripts/visualization/plot\_research\_data.py
+## 3. 統合実験・機能検証 (Experiments & Features)
 
-  → 出力: experiment\_result.png  
-* **学習と脳構造変化の可視化:**  
-  (run\_memory\_consolidation.py の結果を表示)  
-  python scripts/visualization/plot\_memory\_learning.py
+OSの主要機能（覚醒・睡眠・可塑性など）が正しく機能しているかを確認する実験スクリプトです。
 
-  → 出力: memory\_learning\_result.png
+### ライフサイクル実験 (Wake/Sleep Cycle)
+自律的な覚醒と睡眠のサイクル、およびエネルギー代謝を検証します。
 
-## **3\. システムヘルスチェック (System Verification)**
+```bash
+python scripts/experiments/run_research_cycle.py
+```
+*   **確認事項**: ログ (`workspace/runtime_state/`) でエネルギー減少と睡眠移行を確認。
 
-OSカーネルや各モジュールが正常に動作しているかを確認します。
+### 記憶定着実験 (Memory Consolidation)
+学習→睡眠（リプレイ）→再学習による記憶転送とシナプス可塑性を検証します。
 
-* **プロジェクト健全性チェック (推奨)**:  
-  ディレクトリ構造や必須ファイルの存在、基本的なインポート確認を行います。  
-  python scripts/tests/run\_project\_health\_check.py
+```bash
+python scripts/experiments/learning/run_memory_consolidation.py
+```
 
-* **全ユニットテスト実行**:  
-  python scripts/tests/run\_all\_tests.py  
-  \# または  
-  python \-m pytest tests/
+### 社会性・集合知 (Social Tests)
+複数のエージェント間のインタラクションや言語創発のテストです。
 
-## **4\. 従来機能・個別モジュール実験 (Legacy & Components)**
+*   **ネーミングゲーム (言語創発)**:
+    ```bash
+    python scripts/experiments/social/run_naming_game.py
+    ```
+*   **集合知 (Collective Intelligence)**:
+    ```bash
+    python scripts/experiments/systems/run_collective_intelligence.py
+    ```
 
-旧バージョン(v17.x以前)のデモや、特定機能単体の検証スクリプトです。
+### システム拡張性 (Scalability)
+大規模なネットワーク構成での動作検証です。
 
-これらは新しいOSカーネル上ではなく、個別のSNNモデルとして動作する場合があります。
+```bash
+python scripts/tests/verify_scalability.py
+```
 
-### **Brain Components (脳機能モジュール)**
+## 4. デモンストレーション (Demos as Tests)
 
-* **視覚野 (Forward-Forward則)**: python scripts/demos/visual/run\_spiking\_ff\_demo.py  
-* **自由意志・意思決定**: python scripts/demos/brain/run\_free\_will\_demo.py  
-* **クオリア・内部表現**: python scripts/demos/brain/run\_qualia\_demo.py
+特定の脳機能モジュールが正しく動作することを目視で確認するためのデモです。
 
-### **Social & Systems (社会・システム)**
+### 視覚・知覚
+*   **Spiking Forward-Forward**: `scripts/demos/visual/run_spiking_ff_demo_v2.py`
+    *   True SNNでの学習動作確認。
+*   **空間認識**: `scripts/demos/visual/run_spatial_demo.py`
 
-* **集合知**: python scripts/experiments/systems/run\_collective\_intelligence.py  
-* **エージェント実行**: python scripts/agents/run\_autonomous\_learning.py
+### 脳機能
+*   **世界モデル (World Model)**: `scripts/demos/brain/run_world_model_demo.py`
+*   **意識のブロードキャスト**: `scripts/demos/brain/run_conscious_broadcast_demo.py`
+*   **自由意志**: `scripts/demos/brain/run_free_will_demo.py`
 
-### **Benchmarks**
+### 学習メカニズム
+*   **継続学習**: `scripts/demos/learning/run_continual_learning_demo.py`
+*   **睡眠学習**: `scripts/demos/learning/run_sleep_learning_demo.py`
 
-* **レイテンシ測定**: python scripts/benchmarks/benchmark_latency.py
-* **学習安定性 (Stability)**: python benchmarks/stability_benchmark_v2.py --runs 5
+## 5. デバッグ・診断ツール (Debug)
 
-## **5\. デバッグ・診断**
+開発時に詳細な内部状態を確認するためのツールです。
 
-* **スパイク活動のモニタリング**:  
-  python scripts/debug/debug\_spike\_activity.py
+*   **スパイク活動モニタ**:
+    ```bash
+    python scripts/debug/debug_spike_activity.py
+    ```
+*   **シグナル診断**:
+    ```bash
+    python scripts/debug/diagnose_signal.py
+    ```
 
-* **シグナル診断**:  
-  python scripts/debug/diagnose\_signal.py  
+## 6. クイック検証フロー
+
+変更を加えた際の手っ取り早い確認フロー:
+
+1.  `python scripts/tests/run_project_health_check.py` (環境確認)
+2.  `python -m pytest tests/` (論理エラー確認)
+3.  `python benchmarks/stability_benchmark_v2.py --runs 1` (動作・学習確認)

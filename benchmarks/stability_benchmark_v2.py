@@ -28,7 +28,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("StabilityBenchmark")
 
 # Progress File for Dashboard
-PROGRESS_FILE = "runtime_state/benchmark_progress.json"
+PROGRESS_FILE = "workspace/runtime_state/benchmark_progress.json"
 
 
 def save_progress(epoch, accuracy, status="RUNNING"):
@@ -241,7 +241,7 @@ def main():
         "stability_score": success_rate
     }
 
-    with open("stability_benchmark_results.json", "w") as f:
+    with open("workspace/benchmarks/stability_benchmark_results.json", "w") as f:
         json.dump(results, f, indent=4)
 
 

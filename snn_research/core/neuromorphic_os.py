@@ -97,7 +97,7 @@ class NeuromorphicOS(nn.Module):
         self.cycle_count = 0
 
         # Observer
-        self.state_dir = "runtime_state"
+        self.state_dir = "workspace/runtime_state"
         os.makedirs(self.state_dir, exist_ok=True)
         self.state_file_path = os.path.join(
             self.state_dir, "brain_activity.json")

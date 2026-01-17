@@ -69,7 +69,7 @@ def run_spiking_ff_mnist():
         transforms.Lambda(flatten_tensor)
     ])
 
-    data_dir = os.path.join(os.path.dirname(__file__), '../../data')
+    data_dir = os.path.join(os.path.dirname(__file__), '../../../../data')
     # Download logic handled by datasets
     train_dataset = datasets.MNIST(
         data_dir, train=True, download=True, transform=base_transform)
@@ -146,7 +146,7 @@ def run_spiking_ff_mnist():
 
     print("Experiment Finished.")
     save_dir = os.path.join(os.path.dirname(__file__),
-                            '../../results/checkpoints')
+                            '../../../../models/checkpoints')
     os.makedirs(save_dir, exist_ok=True)
     try:
         torch.save(model.state_dict(), os.path.join(
