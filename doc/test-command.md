@@ -1,144 +1,104 @@
-# **テストコマンド一覧 (v17.3 対応)**
+# **Neuromorphic Research OS: 実験・テストコマンドガイド (v6.0)**
 
-このドキュメントでは、プロジェクトの各種テスト、検証スクリプト、実験、デモを実行するためのコマンドを網羅的にまとめています。
+このドキュメントでは、**Neuromorphic Research OS (NROS)** 上での実験、観測、およびシステム検証を行うためのコマンドをまとめています。
 
-重要: すべてのコマンドは、プロジェクトのルートディレクトリ（pyproject.toml がある場所）で実行してください。  
-また、Pythonのモジュール検索パス問題を回避するため、必要に応じて PYTHONPATH=. を付与して実行してください。
+本プロジェクトは「タスクを解くAI」ではなく、\*\*「知能現象（覚醒・睡眠・可塑性）を観測するOS」\*\*へと移行しました。
 
-## **1\. ユニットテスト・統合テスト (tests/)**
+したがって、従来の単発デモよりも、**ライフサイクルを通じた観測実験**が推奨されます。
 
-pytest を使用して、tests/ ディレクトリ以下のテストを実行します。
+## **⚠️ 実行環境について**
 
-### **基本コマンド**
+すべてのコマンドは、プロジェクトのルートディレクトリで実行してください。
 
-* **全テスト実行**:  
-  python \-m pytest tests/  
-  
-* **確認用**:  
-  python -m app.dashboard
+モジュールパスの問題を避けるため、各スクリプト内では自動的にパス調整を行っていますが、エラーが出る場合は以下のように実行してください。
 
-* ヘルスチェック (推奨):  
-  プロジェクトの健全性を手軽に確認できます。  
+\# Mac/Linux  
+export PYTHONPATH=.  
+python scripts/...
+
+\# Windows  
+$env:PYTHONPATH="."  
+python scripts/...
+
+## **1\. 標準観測実験 (Core Experiments)**
+
+Neuromorphic OS v6.0 カーネルを使用した、推奨される標準実験です。
+
+### **A. 覚醒・睡眠サイクル実験 (Basic Life Cycle)**
+
+脳のエネルギー代謝（Astrocyte）と意識レベル（Global Workspace）の相互作用により、自律的に覚醒と睡眠を繰り返す様子を観測します。
+
+* **実行コマンド:**  
+  python scripts/experiments/run\_research\_cycle.py
+
+* **観測項目:** エネルギー準位、疲労度、意識レベルの自発的な振動。  
+* **出力:** runtime\_state/experiment\_history.json
+
+### **B. 記憶定着と構造的可塑性 (Memory & Plasticity)**
+
+学習（Wake）→ 睡眠（Sleep）→ 再学習（Wake）のサイクルを実行します。
+
+睡眠中の「海馬リプレイ（夢）」と「シナプス刈り込み（Pruning）/生成（Genesis）」による脳構造の変化を観測します。
+
+* **実行コマンド:**  
+  python scripts/experiments/learning/run\_memory\_consolidation.py
+
+* **観測項目:** 認識精度(Accuracy)、ドーパミン報酬、有効シナプス数の物理的増減。  
+* **出力:** runtime\_state/memory\_experiment\_history.json
+
+## **2\. データの可視化 (Visualization)**
+
+実験で生成されたJSONログを解析し、グラフとして出力します。
+
+* **基本サイクルの可視化:**  
+  (run\_research\_cycle.py の結果を表示)  
+  python scripts/visualization/plot\_research\_data.py
+
+  → 出力: experiment\_result.png  
+* **学習と脳構造変化の可視化:**  
+  (run\_memory\_consolidation.py の結果を表示)  
+  python scripts/visualization/plot\_memory\_learning.py
+
+  → 出力: memory\_learning\_result.png
+
+## **3\. システムヘルスチェック (System Verification)**
+
+OSカーネルや各モジュールが正常に動作しているかを確認します。
+
+* **プロジェクト健全性チェック (推奨)**:  
+  ディレクトリ構造や必須ファイルの存在、基本的なインポート確認を行います。  
   python scripts/tests/run\_project\_health\_check.py
 
-* **全テストスクリプト実行**:  
-  python scripts/tests/run\_all\_tests.py
-  
-    
-### **システム起動コマンド**  
-    python -m app.main
-    
-### **カテゴリ別テスト**
+* **全ユニットテスト実行**:  
+  python scripts/tests/run\_all\_tests.py  
+  \# または  
+  python \-m pytest tests/
 
-* **スモークテスト (簡易動作確認)**:  
-  python \-m pytest tests/test\_smoke\_all\_paradigms.py
+## **4\. 従来機能・個別モジュール実験 (Legacy & Components)**
 
-* **実世界統合テスト**:  
-  python \-m pytest tests/test\_integration\_real\_world.py
+旧バージョン(v17.x以前)のデモや、特定機能単体の検証スクリプトです。
 
-* **認知アーキテクチャ (Brain Components)**:  
-  python \-m pytest tests/cognitive\_architecture/
+これらは新しいOSカーネル上ではなく、個別のSNNモデルとして動作する場合があります。
 
-* **Brain Integration (脳全体)**:  
-  python \-m pytest tests/test\_brain\_integration.py
+### **Brain Components (脳機能モジュール)**
 
-* **コンパイラテスト**:  
-  python scripts/tests/run\_compiler\_test.py
+* **視覚野 (Forward-Forward則)**: python scripts/demos/visual/run\_spiking\_ff\_demo.py  
+* **自由意志・意思決定**: python scripts/demos/brain/run\_free\_will\_demo.py  
+* **クオリア・内部表現**: python scripts/demos/brain/run\_qualia\_demo.py
 
-* **検証スクリプト**:  
-  python scripts/tests/verify\_phase3.py  
-  python scripts/tests/verify\_dsa\_learning.py  
-  python scripts/tests/verify\_performance.py  
-  python scripts/tests/verify\_scalability.py
+### **Social & Systems (社会・システム)**
 
-## **2\. デモ・シミュレーション (scripts/demos/)**
-
-特定の機能やシナリオを視覚的・対話的に確認するためのスクリプトです。
-
-### **Brain & Consciousness (意識・脳)**
-
-* **Brain v16 (統合デモ)**: python scripts/demos/brain/run\_brain\_v16\_demo.py  
-* **意識放送 (Global Workspace)**: python scripts/demos/brain/run\_conscious\_broadcast\_demo.py  
-* **感情モデル**: python scripts/demos/brain/run\_emotional\_demo.py  
-* **自由意志**: python scripts/demos/brain/run\_free\_will\_demo.py  
-* **クオリア**: python scripts/demos/brain/run\_qualia\_demo.py  
-* **自己修正**: python scripts/demos/brain/run\_self\_correction\_demo.py  
-* **世界モデル**: python scripts/demos/brain/run\_world\_model\_demo.py
-
-### **Learning (学習)**
-
-* **継続学習**: python scripts/demos/learning/run\_continual\_learning\_demo.py  
-* **蒸留学習**: python scripts/demos/learning/run\_distillation\_demo.py  
-* **睡眠学習**: python scripts/demos/learning/run\_sleep\_learning\_demo.py  
-* **睡眠サイクル**: python scripts/demos/learning/run\_sleep\_cycle\_demo.py
-
-### **Visual & Spatial (視覚・空間)**
-
-* **Forward-Forward**: python scripts/demos/visual/run\_forward\_forward\_demo.py  
-* **Spiking FF**: python scripts/demos/visual/run\_spiking\_ff\_demo.py  
-* **産業用視覚 (Industrial Eye)**: python scripts/demos/visual/run\_industrial\_eye\_demo.py  
-* **空間認識**: python scripts/demos/visual/run\_spatial\_demo.py
-
-### **Systems & Social (システム・社会性)**
-
-* **能動的推論**: python scripts/demos/systems/run\_active\_inference\_demo.py  
-* **マルチモーダル**: python scripts/demos/systems/run\_multimodal\_demo.py  
-* **社会性認知**: python scripts/demos/social/run\_social\_cognition\_demo.py
-
-## **3\. 実験スクリプト (scripts/experiments/)**
-
-研究開発フェーズごとの実験を実行します。
-
-### **Brain Evolution & Simulation**
-
-* **脳の進化**: python scripts/experiments/brain/run\_brain\_evolution.py  
-* **脳シミュレーション**: python scripts/experiments/brain/run\_brain\_simulation.py  
-* **共感覚 (Synesthesia)**: python scripts/experiments/brain/run\_synesthetic\_simulation.py  
-* **人工脳 v14**: python scripts/experiments/brain/run\_artificial\_brain\_v14.py  
-* **Brain v20 Prototype**: python scripts/experiments/brain/run\_brain\_v20\_prototype.py
-
-### **Learning & SCAL**
-
-* **STDP学習**: python scripts/experiments/learning/run\_stdp\_learning.py  
-* **継続学習**: python scripts/experiments/learning/run\_continual\_learning\_experiment.py  
-* **オンチップ学習**: python scripts/experiments/learning/run\_on\_chip\_learning.py  
-* **SCAL (Fashion-MNIST)**: python scripts/experiments/scal/run\_scal\_spiking\_ff\_fashion.py  
-* **SCAL (Hybrid)**: python scripts/experiments/scal/run\_scal\_ff\_hybrid.py
-
-### **Systems (Advanced)**
-
-* **AGIプロトタイプ (Phase 6\)**: python scripts/experiments/systems/run\_phase6\_agi\_prototype.py  
-* **文明シミュレーション (Phase 7\)**: python scripts/experiments/systems/run\_phase7\_civilization.py  
-* **シンギュラリティ (Phase 8\)**: python scripts/experiments/systems/run\_phase8\_singularity.py  
 * **集合知**: python scripts/experiments/systems/run\_collective\_intelligence.py  
-* **ニューロモルフィックOS**: python scripts/experiments/systems/run\_neuromorphic\_os.py
+* **エージェント実行**: python scripts/agents/run\_autonomous\_learning.py
 
-### **Applications**
+### **Benchmarks**
 
-* **ECG解析**: python scripts/experiments/applications/run\_ecg\_analysis.py  
-* **Web学習**: python scripts/experiments/applications/run\_web\_learning.py
+* **レイテンシ測定**: python scripts/benchmarks/benchmark\_latency.py
 
-## **4\. エージェント実行 (scripts/agents/)**
+## **5\. デバッグ・診断**
 
-自律エージェントとしてモデルを稼働させます。
+* **スパイク活動のモニタリング**:  
+  python scripts/debug/debug\_spike\_activity.py
 
-* **自律学習エージェント**: python scripts/agents/run\_autonomous\_learning.py  
-* **強化学習エージェント (RL)**: python scripts/agents/run\_rl\_agent.py  
-* **プランナー**: python scripts/agents/run\_planner.py  
-* **Life Form**: python scripts/agents/run\_life\_form.py
-
-## **5\. ベンチマーク (scripts/benchmarks/)**
-
-性能や効率性を測定します。
-
-* **レイテンシ測定**: python scripts/benchmarks/benchmark\_latency.py  
-* **ベンチマークスイート実行**: python scripts/benchmarks/run\_benchmark\_suite.py
-
-## **6\. その他ユーティリティ**
-
-* **デバッグ (スパイク活動)**: python scripts/debug/debug\_spike\_activity.py  
-* **デバッグ (信号診断)**: python scripts/debug/diagnose\_signal.py  
-* **モデル変換**: python scripts/utils/convert\_model.py  
-* **結果分析**: python scripts/visualization/analyze\_results.py  
-* **可視化**: python scripts/visualization/visualize\_brain\_activity.py  
-* **HPO (最適化)**: python scripts/optimization/run\_hpo.py
+* **シグナル診断**:  
+  python scripts/debug/diagnose\_signal.py  

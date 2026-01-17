@@ -1,99 +1,84 @@
-# **SNNプロジェクト: 学習・推論コマンドガイド (v17.3)**
+# **Neuromorphic Research OS: 学習・観測ガイド (v6.0)**
 
-このドキュメントでは、モデルの学習（Training）と推論・デモ（Inference/Demo）を実行するための主要なコマンドについて解説します。  
-プロジェクトディレクトリのルートで実行してください。
+本プロジェクトにおける「学習（Training）」は、単なるパラメータ最適化ではなく、\*\*「経験に伴う脳構造の自己組織化」**と定義されます。 また、「推論（Inference）」は静的な計算ではなく、**「リアルタイムの神経活動現象」\*\*として扱われます。
 
-## **⚠️ 実行前の注意**
+このドキュメントでは、Neuromorphic OS上での学習プロセスの回し方と、その観測方法について解説します。
 
-スクリプトを実行する際、モジュールのインポートエラー（ModuleNotFoundError）が発生する場合は、環境変数 PYTHONPATH にカレントディレクトリを追加してください。
+## **1\. OS上での学習サイクル (Structural Learning)**
 
-\# Mac/Linux  
-export PYTHONPATH=.
+Neuromorphic OS v6.0以降では、以下のプロセスで学習が進行します。このプロセスは自動化されており、ユーザーは環境（入力データや報酬）を提供するだけです。
 
-\# Windows (PowerShell)  
-$env:PYTHONPATH="."
+### **学習のメカニズム**
 
-または、各コマンドの先頭に PYTHONPATH=. を付けて実行します（例: PYTHONPATH=. python scripts/...）。
+1. **覚醒 (Wake):**  
+   * **Forward-Forward則 / STDP:** 局所的な可塑性によりシナプス強度が変化。  
+   * **ドーパミン (Dopamine):** 正解や報酬により可塑性が一時的に強化される（強化学習）。  
+   * **エピソード記録:** 重要な入力パターンが海馬バッファに一時保存される。  
+2. **睡眠 (Sleep):**  
+   * **海馬リプレイ (Replay):** 覚醒時のパターンが高速再生（夢）され、記憶が皮質へ転送される。  
+   * **シナプス恒常性 (Pruning):** 不要・微弱なシナプスが物理的に削除される（忘却による整理）。  
+   * **シナプス生成 (Synaptogenesis):** 新しい接続がランダムに芽生え、新たな学習の準備をする。
 
-## **1\. 学習 (Training)**
+### **実行コマンド**
 
-### **A. 高精度レシピ (High-Performance Recipes)**
+\# 記憶定着と構造変化の実験（推奨）  
+python scripts/experiments/learning/run\_memory\_consolidation.py
 
-特定のタスク（CIFAR-10, MNIST）で最高精度を目指すための推奨スクリプトです。  
-これらは snn\_research/recipes/ 内に定義されており、以下のように実行します。
+### **パラメータ調整**
 
-* **CIFAR-10 学習 (96% Aim)**  
-  \# Pythonモジュールとして実行  
-  python \-c "from snn\_research.recipes.cifar10 import run\_cifar10\_training; run\_cifar10\_training()"
+学習の挙動を変えたい場合は、スクリプト内の config や os\_kernel の設定を変更します。
 
-* **MNIST 学習**  
-  \# Pythonモジュールとして実行  
+* max\_energy: 覚醒時間の長さを制御。  
+* os\_kernel.reward(amount=...): ドーパミンの放出量を調整。
+
+## **2\. 観測と分析 (Observation)**
+
+学習の結果は「正解率」という数値だけでなく、**脳の状態変化**として評価します。
+
+### **主要な観測指標**
+
+* **Synapse Count (Syn):** 脳内の有効な接続総数。睡眠中に減少し（刈り込み）、覚醒後期に増加する（生成）ダイナミクスが健全です。  
+* **Energy / Fatigue:** 代謝のリズムが保たれているか。  
+* **Consciousness Level:** Global Workspaceへの情報統合強度。
+
+### **可視化**
+
+実験後に生成されるJSONデータをグラフ化します。
+
+python scripts/visualization/plot\_memory\_learning.py
+
+**成功のサイン:**
+
+グラフ上で「シナプス数がV字回復している（減ってから増える）」かつ「その後に精度（Accuracy）が向上している」場合、構造的可塑性が正しく機能しています。
+
+## **3\. 単体モデルの学習 (Component Training)**
+
+OSカーネル全体ではなく、特定のSNNモデル（Spiking CNNなど）単体の性能を評価したい場合に使用する、従来型の学習スクリプトです。これらはPyTorch標準の学習ループに近い形式で動作します。
+
+### **A. 高精度レシピ (Recipes)**
+
+snn\_research/recipes/ 以下のスクリプトは、特定のタスク（MNIST, CIFAR-10）に特化したチューニング済みモデルを学習させます。
+
+* **MNIST 学習**:  
   python \-c "from snn\_research.recipes.mnist import run\_mnist\_training; run\_mnist\_training()"
 
-### **B. 汎用トレーナー (Generic Trainer)**
+* **CIFAR-10 学習**:  
+  python \-c "from snn\_research.recipes.cifar10 import run\_cifar10\_training; run\_cifar10\_training()"
 
-設定ファイル (configs/) を指定して、様々なアーキテクチャのモデルを学習させます。
+### **B. 汎用トレーナー**
 
-\# Spiking CNNの設定で学習  
-PYTHONPATH=. python scripts/training/train.py \--config configs/experiments/cifar10\_spikingcnn\_config.yaml
+設定ファイルを指定して任意のモデルを学習させます。
 
-\# デフォルト設定（小規模モデル）で学習  
 PYTHONPATH=. python scripts/training/train.py \--model\_config configs/models/small.yaml
 
-**注意**: 現在、データセット自動ダウンロード機能の一部（WikiTextなど）はモジュール構成の変更により無効化されています。smoke\_test\_data.jsonl は自動生成されます。
+## **4\. Webインターフェース (App Demo)**
 
-### **C. 特定モデルの学習スクリプト**
+学習した脳の挙動をブラウザ上でインタラクティブに確認するためのWebサーバーです。
 
-* **Spiking VLM (Vision-Language Model) 学習**:  
-  python scripts/training/train\_spiking\_vlm.py
+* **起動コマンド:**  
+  python app/main.py
 
-* **Planner (推論エンジン) 学習**:  
-  python scripts/training/train\_planner.py
-
-* SCAL (Statistical Centroid Alignment Learning):  
-  勾配計算を行わない高速学習手法です。  
-  python scripts/training/run\_improved\_scal\_training.py \\  
-      \--config configs/templates/base\_config.yaml \\  
-      \--model\_config configs/models/small.yaml
-
-## **2\. 推論・デモ (Inference & Demo)**
-
-### **Webアプリ/APIサーバー**
-
-FastAPIサーバーを起動し、ブラウザから対話や画像認識を行います。
-
-python app/main.py
-
-### **統合デモ (Unified Perception)**
-
-視覚・言語・運動野を統合したデモを実行します。
-
-python app/unified\_perception\_demo.py
-
-### **CLIによる推論**
-
-snn-cli コマンドがインストールされている場合、以下のように使用できます。
-
-\# ヘルスチェック  
-snn-cli health-check
-
-\# レシピ一覧（実装されている場合）  
-\# snn-cli recipe list
-
-もし snn-cli コマンドがパスに通っていない場合は、以下のように実行します。
-
-python snn-cli.py health-check
-
-## **3\. 高度な学習パラダイム**
-
-生物学的妥当性を重視した学習手法です。
-
-* **STDP (Spike-Timing Dependent Plasticity)**:  
-  python scripts/experiments/learning/run\_stdp\_learning.py
-
-* オンチップ学習 (On-Chip Learning):  
-  エッジデバイス上での適応を想定した学習です。  
-  python scripts/experiments/learning/run\_on\_chip\_learning.py
-
-* **蒸留学習 (Distillation)**:  
-  python scripts/experiments/learning/run\_distillation\_experiment.py  
+  起動後、ブラウザで http://localhost:8000 にアクセスします。  
+* **統合デモ (Unified Perception):**  
+  視覚・言語・運動野の連携デモを行います。  
+  python app/unified\_perception\_demo.py  
