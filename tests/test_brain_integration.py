@@ -40,7 +40,8 @@ class MockActuator:
         if self.astrocyte:
             # 修正: 引数 source="actuator", amount=0.5 を指定
             self.astrocyte.consume_energy("actuator", 0.5)
-            logger.debug(f"Actuator processed command: {cmd} (Energy consumed)")
+            logger.debug(
+                f"Actuator processed command: {cmd} (Energy consumed)")
         pass
 
 # ----------------------------------
@@ -83,7 +84,7 @@ class TestBrainIntegration(unittest.TestCase):
             await brain.start()
             # リソース要求が通るようにエネルギーを補充
             brain.astrocyte.replenish_energy(100.0)
-            initial_energy = brain.astrocyte.current_energy.item() # item()で値を取得して固定
+            initial_energy = brain.astrocyte.current_energy  # .item() removed if float
 
             logger.info(f"Initial Energy: {initial_energy}")
 
@@ -98,7 +99,7 @@ class TestBrainIntegration(unittest.TestCase):
                     timeout=15.0
                 )
             except asyncio.TimeoutError:
-                current = brain.astrocyte.current_energy.item()
+                current = brain.astrocyte.current_energy
                 logger.warning(
                     f"⚠️ [Warn] Integration test timed out. Energy: {initial_energy} -> {current}"
                 )
@@ -122,10 +123,10 @@ class TestBrainIntegration(unittest.TestCase):
             await asyncio.sleep(0.2)
             # アストロサイトが活動を検知してエネルギーが減ったか確認
             # 浮動小数点の誤差を考慮して差分を見る
-            current_energy = brain.astrocyte.current_energy.item()
+            current_energy = brain.astrocyte.current_energy
             if initial_energy - current_energy > 0.001:
                 return
-            
+
             # Brainが停止していたら待機終了
             if hasattr(brain, 'state') and brain.state != "RUNNING":
                 return

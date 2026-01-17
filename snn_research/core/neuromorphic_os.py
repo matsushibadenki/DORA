@@ -328,3 +328,7 @@ class NeuromorphicOS(nn.Module):
         self.system_status = "SHUTDOWN"
         self._export_state({"status": "SHUTDOWN", "timestamp": time.time()})
         logger.info("💤 Neuromorphic OS shutting down.")
+
+    # Compatibility alias for torch.nn.Module / Trainers
+    def forward(self, x: torch.Tensor, phase: str = "wake", **kwargs: Any) -> Dict[str, Any]:
+        return self.run_cycle(x, phase)
