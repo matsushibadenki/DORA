@@ -1,79 +1,30 @@
-# snn_research/cognitive_architecture/__init__.py
-# Title: Cognitive Architecture Init
-# Description: 認知アーキテクチャコンポーネントのエクスポート定義。
-# 修正: ArtificialBrainを削除
+# ファイルパス: snn_research/cognitive_architecture/__init__.py
+# 日本語タイトル: Cognitive Architecture Init (Cleaned)
+# 目的・内容:
+#   Neuromorphic OSに必要なコンポーネントのみをエクスポートする。
+#   古い巨大なアーキテクチャ（HybridPerceptionCortex等）への依存を断ち切り、
+#   ImportErrorを防ぐ。
 
+# --- Core Components for Neuromorphic OS ---
 from .global_workspace import GlobalWorkspace
-from .perception_cortex import PerceptionCortex
-from .motor_cortex import MotorCortex
-from .prefrontal_cortex import PrefrontalCortex
-from .hippocampus import Hippocampus
-from .basal_ganglia import BasalGanglia
-from .cerebellum import Cerebellum
-from .amygdala import Amygdala
 from .astrocyte_network import AstrocyteNetwork
 from .neuromorphic_scheduler import NeuromorphicScheduler
-from .rag_snn import RAGSystem
-from .symbol_grounding import SymbolGrounding
-from .planner_snn import PlannerSNN
-from .reasoning_engine import ReasoningEngine
-from .meta_cognitive_snn import MetaCognitiveSNN
 
-# New Components for Phase 1-4
-from .memory_consolidation import HierarchicalMemorySystem
-from .sleep_consolidation import SleepConsolidator
-from .adaptive_moe import AdaptiveFrankenMoE
-from .delta_learning import DeltaLearningSystem
-from .neuro_symbolic_bridge import NeuroSymbolicBridge
+# --- Optional / Legacy Components (Needed only if explicitly imported) ---
+# エラーの原因となる深い依存関係を持つモジュールは、ここでは自動インポートしない
+# from .hybrid_perception_cortex import HybridPerceptionCortex  # DISABLED to prevent ImportError
+# from .perception_cortex import PerceptionCortex
+# from .motor_cortex import MotorCortex
 
-from .intrinsic_motivation import IntrinsicMotivationSystem
-from .causal_inference_engine import CausalInferenceEngine
-from .emergent_system import EmergentCognitiveSystem
-from .physics_evaluator import PhysicsEvaluator
-from .som_feature_map import SomFeatureMap
-from .hybrid_perception_cortex import HybridPerceptionCortex
-
-from .hdc_engine import HDCEngine, HDCReasoningAgent
-from .tsetlin_machine import TsetlinMachine
-
-# Phase 2.1: Knowledge Graph Integration
-from .curiosity_knowledge_integrator import CuriosityKnowledgeIntegrator, create_curiosity_integrator
-from .theory_of_mind import TheoryOfMind
-from .explainability import ExplainabilityEngine
+# 必要に応じて有効化するコンポーネント
+from .hippocampus import Hippocampus
+# from .prefrontal_cortex import PrefrontalCortex
+# from .basal_ganglia import BasalGanglia
+# from .amygdala import Amygdala
 
 __all__ = [
-    # "ArtificialBrain", # 削除
     "GlobalWorkspace",
-    "PerceptionCortex",
-    "MotorCortex",
-    "PrefrontalCortex",
-    "Hippocampus",
-    "BasalGanglia",
-    "Cerebellum",
-    "Amygdala",
     "AstrocyteNetwork",
     "NeuromorphicScheduler",
-    "RAGSystem",
-    "SymbolGrounding",
-    "PlannerSNN",
-    "ReasoningEngine",
-    "MetaCognitiveSNN",
-    "SleepConsolidator",
-    "HierarchicalMemorySystem",
-    "AdaptiveFrankenMoE",
-    "DeltaLearningSystem",
-    "NeuroSymbolicBridge",
-    "IntrinsicMotivationSystem",
-    "CausalInferenceEngine",
-    "EmergentCognitiveSystem",
-    "PhysicsEvaluator",
-    "SomFeatureMap",
-    "HybridPerceptionCortex",
-    "HDCEngine",
-    "HDCReasoningAgent",
-    "TsetlinMachine",
-    "CuriosityKnowledgeIntegrator",
-    "create_curiosity_integrator",
-    "TheoryOfMind",
-    "ExplainabilityEngine",
+    "Hippocampus",
 ]

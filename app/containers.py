@@ -1,8 +1,8 @@
 # ファイルパス: app/containers.py
-# 日本語タイトル: Dependency Injection Container (Add 'brain' alias)
+# 日本語タイトル: Dependency Injection Container
 # 目的・内容:
-#   アプリケーション全体の依存関係を管理するコンテナ。
-#   NeuromorphicOSを 'brain' として参照できるように修正。
+#   アプリケーション全体の依存関係定義。
+#   NeuromorphicOS、学習則、ハードウェア設定を一元管理する。
 
 import logging.config
 import torch
@@ -33,8 +33,8 @@ class AppContainer(containers.DeclarativeContainer):
         config=config.logging
     )
 
-    # --- Device Configuration ---
-    # config.device が存在しない、または None の場合に "auto" を返すロジック
+    # --- Hardware / Device Configuration ---
+    # 設定ファイルにdevice指定がない場合は自動判定を行うロジック
     device_name_provider = providers.Callable(
         lambda d: d if d else "auto",
         d=config.device.as_(str)
@@ -48,7 +48,8 @@ class AppContainer(containers.DeclarativeContainer):
         name=device_name_provider
     )
 
-    # --- Learning Rules ---
+    # --- Learning Rules (Components) ---
+    # 設計方針に基づき、学習則をコンポーネントとして提供
     stdp_rule = providers.Factory(
         STDPRule,
         learning_rate=config.training.biologically_plausible.stdp.learning_rate.as_(float),
@@ -62,17 +63,19 @@ class AppContainer(containers.DeclarativeContainer):
         threshold=2.0
     )
 
-    # --- Neuromorphic OS Kernel ---
+    # --- Neuromorphic OS Kernel (Core) ---
+    # アプリケーションライフサイクル内で唯一のインスタンス(Singleton)
     neuromorphic_os = providers.Singleton(
         NeuromorphicOS,
         config=config.model,
         device_name=device_name_provider
     )
 
-    # [Fix] main.py等からのアクセス用にエイリアスを設定
+    # Alias for easy access
     brain = neuromorphic_os
 
     # --- Application Services ---
+    # OSの上で動作するアプリケーションサービス群
     snn_engine = providers.Factory(
         SNNInferenceEngine,
         brain=neuromorphic_os,

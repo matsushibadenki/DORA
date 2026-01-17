@@ -1,1 +1,1 @@
-{"status": "SHUTDOWN", "timestamp": 1768609935.754907}
+{"timestamp": 1768643120.81389, "cycle": 6, "phase": "wake", "learning_phase": "neutral", "bio_metrics": {"energy": 999.3999999999999, "fatigue": 0.3, "max_energy": 1000.0, "fatigue_threshold": 80.0, "dopamine": 0.1}, "substrate_activity": {"V1": 0.0, "Association": 0.0, "Hippocampus": 0.0, "Motor": 0.0}, "consciousness_level": 0.0, "synapse_count": 469494, "memory_stats": {"stored_episodes": 6, "capacity": 200}, "scheduler_log": []}

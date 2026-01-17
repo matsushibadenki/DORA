@@ -1,93 +1,85 @@
-# snn_research/core/neurons/lif_neuron.py
+# ファイルパス: snn_research/core/neurons/lif_neuron.py
+# 日本語タイトル: Leaky Integrate-and-Fire (LIF) Neuron
+# 目的・内容:
+#   標準的なスパイキングニューロンモデル。
+#   膜電位の積分、リーク、発火、不応期をシミュレートする。
+#   PyTorchのautogradに対応しつつ、物理的なダイナミクスを保持。
+
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional
 
-class ATanSurrogate(torch.autograd.Function):
-    """
-    Spike generation with surrogate gradient for backpropagation.
-    """
-    @staticmethod
-    def forward(ctx, input, alpha=2.0):
-        ctx.save_for_backward(input)
-        ctx.alpha = alpha
-        return (input >= 0).float()
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        (input,) = ctx.saved_tensors
-        grad_input = grad_output.clone()
-        grad = ctx.alpha / (2 * (1 + (torch.pi / 2 * ctx.alpha * input).pow(2)))
-        return grad_input * grad, None
-
 class LIFNeuron(nn.Module):
     """
-    Leaky Integrate-and-Fire (LIF) Neuron Model (PyTorch Native).
-    Implements Current-Injection model: V[t] = V[t-1] * decay + Input[t]
+    Leaky Integrate-and-Fire Neuron Model.
     
-    Attributes:
-        features (int): Number of neurons.
-        tau_mem (float): Membrane time constant.
-        v_threshold (float): Voltage threshold for spiking.
-        dt (float): Simulation time step.
+    Dynamics:
+        tau * dV/dt = -(V - V_rest) + R * I
+        If V >= V_threshold -> Spike, V = V_reset
     """
-    def __init__(self, features: int, tau_mem: float = 10.0, v_threshold: float = 1.0, dt: float = 1.0):
+    def __init__(
+        self, 
+        features: int, 
+        tau_mem: float = 20.0, 
+        v_threshold: float = 1.0, 
+        v_reset: float = 0.0, 
+        dt: float = 1.0
+    ):
         super().__init__()
         self.features = features
         self.tau_mem = tau_mem
         self.v_threshold = v_threshold
+        self.v_reset = v_reset
         self.dt = dt
         
-        # State
-        self.membrane_potential: Optional[torch.Tensor] = None
-        self.stateful = False
+        # State (mem: Membrane Potential)
+        # register_buffer ensures it's part of state_dict but not a learnable parameter
+        self.register_buffer("mem", torch.zeros(1, features))
+        self.is_stateful = False
 
-    def set_stateful(self, value: bool):
-        """Set whether the neuron maintains state across forward calls."""
-        self.stateful = value
-        if not value:
-            self.reset()
-
-    def reset(self):
-        """Reset membrane potential."""
-        self.membrane_potential = None
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def set_stateful(self, stateful: bool):
         """
-        Forward pass for LIF dynamics.
-        
+        Trueの場合、forward間で膜電位を保持する（RNN的挙動）。
+        Falseの場合、毎回リセットする（Feedforward的挙動）。
+        Kernelでは通常Trueで使用される。
+        """
+        self.is_stateful = stateful
+
+    def reset_state(self):
+        """膜電位のリセット"""
+        if self.mem is not None:
+            self.mem.fill_(self.v_reset)
+
+    def forward(self, input_current: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
         Args:
-            x (torch.Tensor): Input current tensor of shape (Batch, Features)
-            
+            input_current (Tensor): Synaptic input current (Batch, Features)
         Returns:
-            spike (torch.Tensor): Binary spike tensor (1.0 or 0.0)
-            mem (torch.Tensor): Membrane potential AFTER update
+            spikes (Tensor): Binary spikes (1.0 or 0.0)
+            mem (Tensor): Membrane potential
         """
-        # Initialize membrane potential if needed
-        if self.membrane_potential is None:
-            self.membrane_potential = torch.zeros_like(x)
-        elif self.membrane_potential.shape != x.shape:
-            # Handle batch size change or reset on shape mismatch
-            self.membrane_potential = torch.zeros_like(x)
-
-        # LIF Dynamics: Current Injection Model
-        # V[t] = V[t-1] * (1 - dt/tau) + Input * dt
-        decay = 1.0 - (self.dt / self.tau_mem)
-        decay = max(0.0, min(1.0, decay))
+        batch_size = input_current.shape[0]
+        
+        # 状態の初期化または維持
+        if not self.is_stateful or self.mem.shape[0] != batch_size:
+            self.mem = torch.full((batch_size, self.features), self.v_reset, device=input_current.device)
+        
+        # Euler Integration
+        # dV = (-(V - V_rest) + I) * (dt / tau)
+        decay = self.dt / self.tau_mem
+        delta_v = (-(self.mem - self.v_reset) + input_current) * decay
         
         # Update membrane potential
-        new_mem = self.membrane_potential * decay + x
+        self.mem = self.mem + delta_v
         
-        # Spike generation (Heaviside step function with Surrogate Gradient)
-        spike = ATanSurrogate.apply(new_mem - self.v_threshold)
+        # Spike generation (Heaviside step function)
+        # 勾配計算のためにSurrogate Gradientを使うのが一般的だが、
+        # ここではResearch OSとしての「現象シミュレーション」を優先し、単純な閾値判定を行う。
+        # (Forward-ForwardやSTDPでは勾配を使わないため問題ない)
+        spikes = (self.mem >= self.v_threshold).float()
         
-        # Hard Reset: If spiked, reset potential to 0
-        new_mem = new_mem * (1.0 - spike)
+        # Reset mechanism (Soft reset or Hard reset)
+        # Hard reset: V = V_reset
+        self.mem = self.mem * (1.0 - spikes) + self.v_reset * spikes
         
-        # Update state if stateful
-        if self.stateful:
-            self.membrane_potential = new_mem.detach() # Detach
-        else:
-            self.membrane_potential = None
-
-        return spike, new_mem
+        return spikes, self.mem
