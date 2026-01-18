@@ -201,8 +201,8 @@ class VisualCortex(nn.Module):
         }
 
         for name in self.layer_names:
-            group = self.substrate.neuron_groups.get(name)
-            if group:
+            if name in self.substrate.neuron_groups:
+                group = self.substrate.neuron_groups[name]
                 # Additional Stability Metrics
                 weights = []
                 # Find input projections to this layer

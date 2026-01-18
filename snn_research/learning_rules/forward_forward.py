@@ -91,19 +91,24 @@ class ForwardForwardRule(PlasticityRule):
         # probs = sigmoid(Goodness - threshold)
         probs = torch.sigmoid(goodness - self.threshold)
 
-        # 重み更新係数 (Hintonの論文に基づく符号設計)
+        # 重み更新係数
         # pos: 1に近づけたい -> factor ~ (1 - probs)
         # neg: 0に近づけたい -> factor ~ (0 - probs) = -probs
+        # factor: (Batch, )
         factor = (1.0 - probs) if phase == "positive" else (-probs)
-        factor = factor.unsqueeze(1).unsqueeze(2)  # (Batch, 1, 1)
 
-        # Hebbian Term: activity * pre_input
-        # (Batch, N_post, 1) * (Batch, 1, N_pre) -> (Batch, N_post, N_pre)
-        eligibility = torch.einsum("bi,bj->bij", activity, pre_spikes)
+        # Optimized Calculation to avoid (Batch, N_post, N_pre) allocation
+        # We want: mean_over_batch( factor[b] * activity[b,i] * pre_spikes[b,j] )
+        # = (1/B) * Sum_b ( (factor[b] * activity[b]) @ pre_spikes[b].T )
+        # Let weighted_activity = activity * factor.unsqueeze(1)  -> (Batch, N_post)
+        # delta_w = (weighted_activity.T @ pre_spikes) / Batch_Size
 
-        # 更新量の計算
-        delta_w_batch = factor * eligibility
-        delta_w = delta_w_batch.mean(dim=0) * self.lr
+        batch_size = pre_spikes.size(0)
+        weighted_activity = activity * factor.unsqueeze(1)  # (Batch, N_post)
+
+        # (N_post, Batch) @ (Batch, N_pre) -> (N_post, N_pre)
+        numerator = torch.matmul(weighted_activity.t(), pre_spikes)
+        delta_w = numerator / batch_size * self.lr
 
         # Weight Decay (忘却)
         delta_w -= self.w_decay * current_weights

@@ -104,17 +104,18 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
         "input_dim": 784,
         "hidden_dim": 1500,
         "num_layers": 2,
-        # Lower LR for stability
-        "learning_rate": 0.002,
-        # Higher threshold to encourage strong activity ONLY when confident
-        "ff_threshold": 5.0,
-        "tau_mem": 0.5,
+        # Tuned for Learning: Higher LR, Lower Threshold
+        "learning_rate": 0.05,  # Increased from 0.002
+        # Lower threshold to encourage activity 2.0 is standard for FF
+        # Lower threshold to encourage activity 2.0 is standard for FF
+        "ff_threshold": 2.0,    # Decreased from 5.0
+        "tau_mem": 20.0,        # Fixed for stability (dt=1.0)
         "threshold": 1.0,
         "dt": 1.0,
         "time_steps": args.time_steps,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
-        "use_layer_norm": True  # Enable New Stability Feature
+        "use_layer_norm": True
     }
 
     model = VisualCortex(device=device, config=config).to(device)
@@ -128,10 +129,15 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
     # Training
     for epoch in range(1, config["epochs"] + 1):
         model.train()
+
+        # Track epoch-level stats
+        epoch_firing_rates = []
+
         for data, target in tqdm(train_loader, desc=f"Trial {trial_id} Epoch {epoch}/{config['epochs']}", unit="batch"):
             data, target = data.to(device), target.to(device)
             batch_size = data.size(0)
 
+            # Scale input to prevent immediate saturation
             x_pos = overlay_y_on_x(data, target, device=device)
             y_neg = (target + torch.randint(1, 10,
                      (batch_size,), device=device)) % 10
@@ -142,13 +148,33 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
             for t in range(config["time_steps"]):
                 model(x_pos, phase="wake")
 
+            # Debug: Capture firing rate after positive phase
+            state_pos = model.get_state()
+            epoch_firing_rates.append(state_pos["layers"]["V1"]["firing_rate"])
+
             # Negative
             model.reset_state()
             for t in range(config["time_steps"]):
                 model(x_neg, phase="sleep")
 
-            # Record detailed state occasionally
-            # We can't log every batch, too heavy.
+        # Log average firing rate for V1
+        avg_rate = sum(epoch_firing_rates) / \
+            len(epoch_firing_rates) if epoch_firing_rates else 0.0
+
+        print(f"DEBUG_FIRING_RATE: {avg_rate}")
+        try:
+            with open("workspace/diagnosis_report.json", "w") as f:
+                json.dump({"last_firing_rate": avg_rate, "epoch": epoch}, f)
+        except Exception:
+            pass
+
+        logger.info(
+            f"  Epoch {epoch} Avg Firing Rate (V1): {avg_rate:.4f} (Target ~0.1-0.5)")
+        logger.info(
+            f"  Epoch {epoch} Avg Firing Rate (V1): {avg_rate:.4f} (Target ~0.1-0.5)")
+
+        # Record detailed state occasionally
+        # We can't log every batch, too heavy.
 
         # Validation per epoch (optional, but good for tracking)
         # acc = validate(model, test_loader, device, config)
@@ -188,6 +214,8 @@ def main():
     parser.add_argument("--time_steps", type=int, default=25)
     parser.add_argument("--threshold", type=float,
                         default=95.0, help="Success threshold accuracy %")
+    parser.add_argument("--subset_size", type=int, default=None,
+                        help="Limit training dataset size for speed")
 
     args = parser.parse_args()
 
@@ -210,6 +238,15 @@ def main():
                               download=True, transform=base_transform)
     test_ds = datasets.MNIST(data_dir, train=False, transform=base_transform)
 
+    if args.subset_size:
+        logger.info(f"Using subset of size {args.subset_size} for speed.")
+        indices = torch.randperm(len(train_ds))[:args.subset_size]
+        train_ds = torch.utils.data.Subset(train_ds, indices)
+        # Also limit test set to speed up validation?
+        # Maybe proportionate? Let's keep test set full or small fixed
+        test_indices = torch.randperm(len(test_ds))[:1000]
+        test_ds = torch.utils.data.Subset(test_ds, test_indices)
+
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=100,
@@ -218,7 +255,7 @@ def main():
     accuracies = []
 
     for i in range(args.runs):
-        acc = run_single_trial(i+1, args, device, train_loader, test_loader)
+        acc, _ = run_single_trial(i+1, args, device, train_loader, test_loader)
         accuracies.append(acc)
 
     accuracies = np.array(accuracies)

@@ -1,41 +1,44 @@
+# isort: skip_file
 """
-ファイルパス: scripts/debug_spike_activity.py
+ファイルパス: scripts/debug/debug_spike_activity.py
 タイトル: SNNスパイク活動デバッガー (ニューロン直接監視版)
 機能説明:
   SNNモデルの各ニューロン層（LIFなど）を直接フックし、正しいスパイク発火率を計測・表示します。
-  (修正: 'cast' のインポート漏れを修正し、NameErrorを解消)
 """
 
+from typing import Dict, List, Tuple, Optional, Any, cast
+import logging
+from omegaconf import OmegaConf, DictConfig
+import torch.nn as nn
+import torch
 import sys
 import os
-import torch
-import torch.nn as nn
-from omegaconf import OmegaConf, DictConfig
-import logging
-# 修正: 'cast' をインポートに追加
-from typing import Dict, List, Tuple, Optional, Any, cast
 
-# プロジェクトルートをsys.pathに追加
+# プロジェクトルートをsys.pathに強制追加 (インポートの前に行う)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
+# scripts/debug -> scripts -> root (DORA)
+project_root = os.path.abspath(os.path.join(current_dir, "../../"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+
 # ロギング設定
 logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    force=True)
 logger = logging.getLogger(__name__)
 
-# 必要なライブラリのインポート
+# 必要なライブラリのインポート (sys.path設定後)
 try:
-    # 具体的なニューロンクラスをインポート
     from snn_research.core.neurons import (
         AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
         TC_LIF, DualThresholdNeuron, ProbabilisticLIFNeuron
     )
     from snn_research.core.layers.lif_layer import LIFLayer
+    from snn_research.distillation.model_registry import ModelRegistry
 except ImportError as e:
     logger.error(f"ライブラリのインポートに失敗しました: {e}")
+    logger.error(f"現在のsys.path: {sys.path}")
     logger.error("プロジェクトルートから実行しているか確認してください。")
     sys.exit(1)
 
@@ -183,10 +186,7 @@ def create_dummy_input(model_config: DictConfig, batch_size: int, timesteps: int
 
 
 def run_spike_test(config_path: str, timesteps: int, batch_size: int):
-    try:
-        from snn_research.distillation.model_registry import ModelRegistry
-    except ImportError:
-        sys.exit(1)
+    # Already imported in try-except block above
 
     config_dict = load_config(config_path)
     model_config_dict = config_dict.get("model")

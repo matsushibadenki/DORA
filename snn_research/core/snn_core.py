@@ -38,7 +38,7 @@ class SynapticProjection(nn.Module):
         self.plasticity_rule = plasticity_rule
 
         # 直交初期化による信号伝播の安定化
-        nn.init.orthogonal_(self.synapse.weight)
+        nn.init.orthogonal_(self.synapse.weight, gain=1.4)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """入力スパイク列に対するシナプス電流を計算"""

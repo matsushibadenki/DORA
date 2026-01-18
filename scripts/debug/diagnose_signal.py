@@ -1,22 +1,36 @@
-from transformers import AutoTokenizer
-from torch.utils.data import DataLoader
-from snn_research.data.datasets import SimpleTextDataset
-from snn_research.core.snn_core import SNNCore
+# isort: skip_file
+from omegaconf import OmegaConf
+import torch
 import sys
 import os
-import torch
 from pathlib import Path
-from omegaconf import OmegaConf
 
-# プロジェクトルートをパスに追加
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+# プロジェクトルートをパスに追加 (インポートの前に行う)
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+
+
+# 必要なライブラリのインポート (sys.path設定後)
+try:
+    from transformers import AutoTokenizer
+    from torch.utils.data import DataLoader
+    from snn_research.data.datasets import SimpleTextDataset
+    # [FIX] Use high-level model instead of Kernel
+    # from snn_research.core.snn_core import SNNCore
+    from snn_research.models.transformer.spiking_rwkv import BitSpikingRWKV
+except ImportError as e:
+    print(f"❌ ライブラリのインポートに失敗しました: {e}")
+    print(f"Current sys.path: {sys.path}")
+    sys.exit(1)
 
 
 def main():
     print("🔍 SNN詳細信号診断 (Full Forward / Fixed) を開始します...")
 
     # 1. 設定とモデル
-    config_path = "configs/models/bit_rwkv_micro.yaml"
+    # scripts/debug/../../configs -> project_root/configs
+    config_path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(__file__))), "configs/models/bit_rwkv_micro.yaml")
+
     if not os.path.exists(config_path):
         print(f"❌ Config not found: {config_path}")
         return
@@ -24,26 +38,70 @@ def main():
     cfg = OmegaConf.load(config_path)
 
     print("  - Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        # Padding token setting for GPT-2
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+    except Exception as e:
+        print(f"❌ Tokenizer load failed: {e}")
+        return
+
     device = "cpu"
 
     print("  - Building model...")
     try:
-        model_container = SNNCore(config=cfg.model, vocab_size=len(tokenizer))
-        model = model_container.model
+        # [FIX] Instantiate BitSpikingRWKV directly
+        # Config structure might differ, map accordingly or pass flat args if model doesn't take config obj
+        # BitSpikingRWKV(vocab_size, d_model=..., num_layers=...)
+
+        mdl_cfg = cfg.model
+
+        # Extract params safely or use defaults
+        d_model = mdl_cfg.get("d_model", 256)
+        num_layers = mdl_cfg.get("num_layers", 4)
+        time_steps = mdl_cfg.get("time_steps", 16)
+
+        # If config is nested differently, adjust here.
+
+        model = BitSpikingRWKV(
+            vocab_size=len(tokenizer),
+            d_model=d_model,
+            num_layers=num_layers,
+            time_steps=time_steps,
+            # neuron_config can be passed if needed
+        )
+
         model.to(device)
         model.eval()
     except Exception as e:
         print(f"❌ モデル構築エラー: {e}")
+        import traceback
+        traceback.print_exc()
         return
 
     # 2. データ準備
-    data_path = "data/smoke_test_data.jsonl"
+    data_path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(__file__))), "data/smoke_test_data.jsonl")
+
     if not os.path.exists(data_path):
         print(f"❌ Data not found: {data_path}")
-        return
+        # Create dummy data if missing for diagnosis
+        print("⚠️  Using dummy data instead.")
+        dummy_data = True
+    else:
+        dummy_data = False
 
-    dataset = SimpleTextDataset(data_path, tokenizer, max_seq_len=16)
+    if dummy_data:
+        # Create minimal dummy dataset interface
+        class DummyDataset:
+            def __len__(self): return 1
+            def __getitem__(self, idx): return (torch.randint(
+                0, 1000, (16,)), torch.randint(0, 1000, (16,)))
+        dataset = DummyDataset()
+    else:
+        dataset = SimpleTextDataset(data_path, tokenizer, max_seq_len=16)
+
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     try:
@@ -52,6 +110,8 @@ def main():
             input_ids = batch[0].to(device)
         elif isinstance(batch, dict):
             input_ids = batch['input_ids'].to(device)
+        elif isinstance(batch, torch.Tensor):
+            input_ids = batch.to(device)
         else:
             print(f"❌ Unexpected batch type: {type(batch)}")
             return
@@ -83,8 +143,12 @@ def main():
             if "lif" in name.lower() or "neuron" in name.lower():
                 if isinstance(output, torch.Tensor):
                     spike_count = output.sum().item()
-                    spike_rate = output.float().mean().item() * 100
-                    spike_info = f" | Spikes: {int(spike_count)} (Rate: {spike_rate:.2f}%)"
+                    # Only calculate rate if count > 0 to avoid noise
+                    if spike_count > 0:
+                        spike_rate = output.float().mean().item() * 100
+                        spike_info = f" | Spikes: {int(spike_count)} (Rate: {spike_rate:.2f}%)"
+                    else:
+                        spike_info = " | Spikes: 0"
 
             print(f"  🔹 [{name}]")
             print(f"      Input Mean: {in_mean:.6f}")
@@ -100,41 +164,27 @@ def main():
     # 主要な層にフックを登録
     hooks = []
 
-    # Embedding
-    hooks.append(model.embedding.register_forward_hook(
-        debug_hook("Embedding")))
+    # Embedding - BitSpikingRWKV has 'embedding' ? Let's check or user generic try
+    if hasattr(model, 'embedding'):
+        hooks.append(model.embedding.register_forward_hook(
+            debug_hook("Embedding")))
 
-    # 各レイヤーのコンポーネントを探索してフック
-    if hasattr(model, 'layers'):
-        for i, layer in enumerate(model.layers):
-            # BitLinear (time_mix_k)
-            if hasattr(layer, 'time_mix_k'):
-                hooks.append(layer.time_mix_k.register_forward_hook(
-                    debug_hook(f"Layer{i}.TimeMix_K (BitLinear)")))
+    # Layers
+    if hasattr(model, 'blocks'):  # RWKV usually has blocks
+        for i, layer in enumerate(model.blocks):
+            # Inspect structure if needed
+            hooks.append(layer.register_forward_hook(debug_hook(f"Block{i}")))
 
-            # LIF (time_key_lif)
-            if hasattr(layer, 'time_key_lif'):
-                # 設定値の確認
-                neuron = layer.time_key_lif
-                thresh = neuron.base_threshold
-                if isinstance(thresh, torch.Tensor):
-                    thresh = thresh.mean().item()
-                tau_val = 0.0
-                if hasattr(neuron, 'log_tau_mem') and isinstance(neuron.log_tau_mem, torch.Tensor):
-                    tau_val = (torch.exp(neuron.log_tau_mem) +
-                               1.1).mean().item()
-                elif hasattr(neuron, 'tau_mem'):
-                    tau_val = float(neuron.tau_mem)
-
-                print(
-                    f"\n  [Layer {i} Config Check] Threshold: {thresh}, Tau: {tau_val:.2f}")
-                hooks.append(layer.time_key_lif.register_forward_hook(
-                    debug_hook(f"Layer{i}.LIF_K")))
+            # BitLinear if present
+            if hasattr(layer, 'time_mixing'):
+                # Check submodules
+                pass
 
     # 実行
     with torch.no_grad():
         try:
             print("\n  --- Forward Pass Start ---")
+            # RWKV forward sig: forward(self, input_ids, return_spikes=False, ...)
             model(input_ids, return_spikes=True)
             print("  --- Forward Pass End ---")
         except Exception as e:
