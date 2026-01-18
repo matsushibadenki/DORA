@@ -4,7 +4,6 @@
 #   脳内の異なるモジュール（視覚、思考、恒常性）が意識の座を巡って競合する様子をシミュレーションする。
 #   通常は「視覚」が優位だが、緊急時（空腹や痛み）には「恒常性」が割り込んで意識をジャックすることを確認する。
 
-from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 import os
 import sys
 import torch
@@ -14,6 +13,7 @@ import time
 # パス設定
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
 
+from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 # ログ設定
 logging.basicConfig(
     level=logging.INFO,

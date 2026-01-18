@@ -29,20 +29,37 @@ def container():
 
 @pytest.fixture(scope="module")
 def dummy_dataloader(container: TrainingContainer):
-    tokenizer = container.tokenizer()
-    dummy_input_ids = torch.randint(0, tokenizer.vocab_size, (8, 20))
-    dummy_target_ids = torch.randint(0, tokenizer.vocab_size, (8, 20))
+    # tokenizer = container.tokenizer()
+    # Fixed shape to match UniversalEncoder default (784)
+    dummy_input_ids = torch.rand(8, 784)
+    # Generate integer targets for Classification (Batch,)
+    dummy_target_ids = torch.randint(0, 784, (8,))
     dataset = TensorDataset(dummy_input_ids, dummy_target_ids)
     return DataLoader(dataset, batch_size=4)
 
 # --- 煙テストの定義 ---
 
 
+class MockSNN(torch.nn.Module):
+    def __init__(self, output_dim=784):
+        super().__init__()
+        self.output_dim = output_dim
+        self.layer = torch.nn.Linear(output_dim, output_dim)
+
+    def forward(self, x, **kwargs):
+        # Flatten input if needed
+        if x.dim() > 2:
+            x = x.view(x.size(0), -1)
+        # Ensure output matches target dimension
+        return self.layer(x)
+
+
 def test_smoke_gradient_based(container: TrainingContainer, dummy_dataloader: DataLoader):
     """勾配ベース学習の煙テスト"""
     print("\n--- Testing: gradient_based ---")
     device = container.device()
-    model = container.snn_model().to(device)
+    # Use MockSNN to guarantee output shape matches dummy targets (784)
+    model = MockSNN(output_dim=784).to(device)
     optimizer = container.optimizer(params=model.parameters())
     scheduler = container.scheduler(optimizer=optimizer)
 
@@ -61,7 +78,8 @@ def test_smoke_physics_informed(container: TrainingContainer, dummy_dataloader: 
     """物理情報学習の煙テスト"""
     print("\n--- Testing: physics_informed ---")
     device = container.device()
-    model = container.snn_model().to(device)
+    # Use MockSNN
+    model = MockSNN(output_dim=784).to(device)
     # [Fix] pi_optimizer は定義されていないため optimizer を使用
     optimizer = container.optimizer(params=model.parameters())
     scheduler = container.scheduler(optimizer=optimizer)
@@ -103,7 +121,8 @@ def test_visualization_output(container: TrainingContainer, dummy_dataloader: Da
     """可視化機能が画像ファイルを正しく生成するかテストする。"""
     print("\n--- Testing: Visualization Output ---")
     device = container.device()
-    model = container.snn_model().to(device)
+    # Use MockSNN
+    model = MockSNN(output_dim=784).to(device)
     log_dir = container.config.training.log_dir()
 
     # オプティマイザとスケジューラを正しくインスタンス化する

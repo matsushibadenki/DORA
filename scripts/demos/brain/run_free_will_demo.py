@@ -5,7 +5,6 @@
 #   「健康でいたい」という長期的目標（Goal）の葛藤をシミュレーション。
 #   AgencyEngineが衝動を抑制（Veto）することで、自由意志の発揮を確認する。
 
-from snn_research.cognitive_architecture.agency_engine import AgencyEngine
 import os
 import sys
 import torch
@@ -14,6 +13,7 @@ import logging
 # パス設定
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
 
+from snn_research.cognitive_architecture.agency_engine import AgencyEngine
 # ログ設定
 logging.basicConfig(
     level=logging.INFO,

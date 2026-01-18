@@ -10,6 +10,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from tqdm import tqdm
 
 # Path setup
 sys.path.append(os.path.abspath(
@@ -127,7 +128,7 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
     # Training
     for epoch in range(1, config["epochs"] + 1):
         model.train()
-        for data, target in train_loader:
+        for data, target in tqdm(train_loader, desc=f"Trial {trial_id} Epoch {epoch}/{config['epochs']}", unit="batch"):
             data, target = data.to(device), target.to(device)
             batch_size = data.size(0)
 

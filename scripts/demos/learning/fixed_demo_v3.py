@@ -111,7 +111,7 @@ class ContinualTrainer(ForwardForwardTrainer):
         with torch.no_grad():
             features = self.feature_extractor(x)
 
-        features = features.to('cpu')
+        features = features.to(self.device)
 
         if self.model.training:
             self.replay_buffer.push(features, y)
@@ -134,8 +134,6 @@ class ContinualTrainer(ForwardForwardTrainer):
             data, target = data.to(self.device), target.to(self.device)
 
             x_pos_curr, x_neg_curr = self.generate_negative_data(data, target)
-            x_pos_curr = x_pos_curr.to('cpu')
-            x_neg_curr = x_neg_curr.to('cpu')
 
             # Interleaved Replay
             batch_size = data.size(0)
@@ -149,12 +147,10 @@ class ContinualTrainer(ForwardForwardTrainer):
                 features_mem = features_mem.to(self.device)
                 labels_mem = labels_mem.to(self.device)
 
-                x_pos_mem = self.overlay_y_on_x(
-                    features_mem, labels_mem).to('cpu')
+                x_pos_mem = self.overlay_y_on_x(features_mem, labels_mem)
                 y_fake_mem = (labels_mem + torch.randint(1, self.num_classes,
                                                          (len(labels_mem),)).to(self.device)) % self.num_classes
-                x_neg_mem = self.overlay_y_on_x(
-                    features_mem, y_fake_mem).to('cpu')
+                x_neg_mem = self.overlay_y_on_x(features_mem, y_fake_mem)
 
                 x_pos_final = torch.cat([x_pos_curr, x_pos_mem], dim=0)
                 x_neg_final = torch.cat([x_neg_curr, x_neg_mem], dim=0)
@@ -168,23 +164,14 @@ class ContinualTrainer(ForwardForwardTrainer):
                     batch_loss += layer_loss
 
                     with torch.no_grad():
-                        out_pos = layer(x_pos_final)
-                        if isinstance(out_pos, tuple):
-                            x_pos_final = out_pos[0].detach()
-                        else:
-                            x_pos_final = out_pos.detach()
-
-                        out_neg = layer(x_neg_final)
-                        if isinstance(out_neg, tuple):
-                            x_neg_final = out_neg[0].detach()
-                        else:
-                            x_neg_final = out_neg.detach()
+                        x_pos_final = layer(x_pos_final).detach()
+                        x_neg_final = layer(x_neg_final).detach()
                 else:
                     x_pos_final = layer(x_pos_final)
                     x_neg_final = layer(x_neg_final)
 
             total_loss += batch_loss
-            pbar.set_postfix({"loss": f"{batch_loss:.4f}"})
+            pbar.set_postfix({"loss": f"{batch_loss.item():.4f}"})
 
         return {"train_loss": total_loss / len(train_loader)}
 
@@ -200,10 +187,10 @@ class ContinualTrainer(ForwardForwardTrainer):
         features_mem = features_mem.to(self.device)
         labels_mem = labels_mem.to(self.device)
 
-        x_p = self.overlay_y_on_x(features_mem, labels_mem).to('cpu')
+        x_p = self.overlay_y_on_x(features_mem, labels_mem)
         y_fake = (labels_mem + torch.randint(1, self.num_classes,
                   (len(labels_mem),)).to(self.device)) % self.num_classes
-        x_n = self.overlay_y_on_x(features_mem, y_fake).to('cpu')
+        x_n = self.overlay_y_on_x(features_mem, y_fake)
 
         total_loss = 0.0
         for layer in self.execution_pipeline:
@@ -211,18 +198,8 @@ class ContinualTrainer(ForwardForwardTrainer):
                 l_loss, _, _ = layer.train_step(x_p, x_n)
                 total_loss += l_loss
                 with torch.no_grad():
-                    out_p = layer.forward(x_p)
-                    if isinstance(out_p, tuple):
-                        x_p = out_p[0].detach()
-                    else:
-                        x_p = out_p.detach()
-
-                    out_n = layer.forward(x_n)
-                    if isinstance(out_n, tuple):
-                        x_n = out_n[0].detach()
-                    else:
-                        x_n = out_n.detach()
-
+                    x_p = layer.forward(x_p).detach()
+                    x_n = layer.forward(x_n).detach()
             else:
                 x_p = layer(x_p)
                 x_n = layer(x_n)
@@ -230,12 +207,12 @@ class ContinualTrainer(ForwardForwardTrainer):
 
     def predict(self, data_loader: DataLoader) -> float:
         self.model.eval()
-        self.model.to('cpu')
+        self.model.to(self.device)
 
         for layer in self.execution_pipeline:
-            layer.to('cpu')
+            layer.to(self.device)
             if hasattr(layer, 'block'):
-                layer.block.to('cpu')
+                layer.block.to(self.device)
 
         correct = 0
         total = 0
@@ -259,21 +236,12 @@ class ContinualTrainer(ForwardForwardTrainer):
                     for layer in self.execution_pipeline:
                         h = h.to('cpu')
                         if isinstance(layer, (SpikingForwardForwardLayer, ForwardForwardLayer)):
-                            out = layer.forward(h)
-                            if isinstance(out, tuple):
-                                # Spiking layer returns (spikes, v_mem)
-                                spikes, v_mem = out
-                                h = spikes.detach()  # Use spikes for next layer
-                                if isinstance(layer, SpikingForwardForwardLayer):
-                                    g = layer.compute_goodness(spikes, v_mem)
-                                else:
-                                    # Should not happen for ForwardForwardLayer but safe fallback
-                                    g = layer.compute_goodness(spikes)
+                            h = layer.forward(h)
+                            if isinstance(layer, SpikingForwardForwardLayer):
+                                g = h.mean(dim=1).pow(2).mean(dim=1)
                             else:
-                                h = out
-                                g = layer.compute_goodness(h)
-                                h = h.detach()
-
+                                dims = list(range(1, h.dim()))
+                                g = h.pow(2).mean(dim=dims)
                             class_goodness[:, label_idx] += g
                         else:
                             h = layer(h)

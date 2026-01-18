@@ -1,6 +1,14 @@
 import logging
-from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
+import os
+import sys
+
+# プロジェクトルートをパスに追加
+sys.path.append(os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "../../..")))
+
+from snn_research.social.emergent_language import Agent, NamingGameSimulation
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
+from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
 from snn_research.social.emergent_language import Agent, NamingGameSimulation
 
 logging.basicConfig(level=logging.INFO)

@@ -9,27 +9,66 @@ import torch
 import torch.nn as nn
 from typing import Dict, Any
 
+
 class AstrocyteNetwork(nn.Module):
     """
     Manages global energy reservoir and metabolic waste (fatigue).
     """
+
     def __init__(
-        self, 
-        max_energy: float = 1000.0, 
+        self,
+        max_energy: float = 1000.0,
         fatigue_threshold: float = 80.0,
-        device: str = "cpu"
+        device: str = "cpu",
+        **kwargs
     ):
+        if 'initial_energy' in kwargs:
+            max_energy = kwargs['initial_energy']
         super().__init__()
         self.max_energy = max_energy
         self.current_energy = max_energy
         self.fatigue = 0.0
         self.fatigue_threshold = fatigue_threshold
-        
+
         # Parameters
         self.base_metabolism = 0.1
         self.spike_cost = 0.05
         self.recovery_rate = 2.0
-    
+
+        # Legacy / Test Compatibility
+        self.modulators: Dict[str, float] = {}
+
+    @property
+    def energy(self) -> float:
+        return self.current_energy
+
+    @energy.setter
+    def energy(self, value: float):
+        self.current_energy = value
+
+    def request_resource(self, source: str, amount: float) -> bool:
+        """Legacy method for resource request compatibility."""
+        if self.current_energy > amount:
+            self.current_energy -= amount
+            return True
+        return False
+
+    def maintain_homeostasis(self, model: nn.Module, learning_rate: float):
+        """Legacy method stub for test_homeostasis_scaling."""
+        # Simple implementation: scale weights if glutamate is high
+        if self.modulators.get("glutamate", 0.0) > 0.8:
+            with torch.no_grad():
+                for param in model.parameters():
+                    param.mul_(0.9)  # Scale down
+
+    def handle_neuron_death(self, layer: nn.Module, death_rate: float):
+        """Legacy method stub for test_neuron_death."""
+        if hasattr(layer, 'weight'):
+            with torch.no_grad():
+                mask = torch.rand_like(layer.weight) > death_rate
+                layer.weight.mul_(mask.float())
+            self.current_energy -= 10.0  # Repair cost
+
     def monitor_neural_activity(self, firing_rate: float):
         """
         神経発火頻度に基づいてエネルギーを消費し、疲労物質を蓄積する。
@@ -37,7 +76,7 @@ class AstrocyteNetwork(nn.Module):
         cost = self.base_metabolism + (firing_rate * self.spike_cost)
         self.current_energy -= cost
         self.current_energy = max(0.0, self.current_energy)
-        
+
         # 疲労の蓄積 (活動が高いほど溜まる)
         waste_accumulation = cost * 0.5
         self.fatigue += waste_accumulation

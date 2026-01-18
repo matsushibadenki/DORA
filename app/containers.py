@@ -16,6 +16,7 @@ from snn_research.core.neuromorphic_os import NeuromorphicOS
 from snn_research.cognitive_architecture.async_brain_kernel import ArtificialBrain
 from snn_research.learning_rules.stdp import STDPRule
 from snn_research.learning_rules.forward_forward import ForwardForwardRule
+from snn_research.io.universal_encoder import UniversalSpikeEncoder
 
 # Services
 from app.services.chat_service import ChatService
@@ -131,6 +132,13 @@ class BrainContainer(AppContainer):
     artificial_brain = providers.Factory(
         ArtificialBrain,
         config=AppContainer.config
+    )
+
+    spike_encoder = providers.Factory(
+        UniversalSpikeEncoder,
+        time_steps=AppContainer.config.model.time_steps.as_(int),
+        output_dim=AppContainer.config.model.d_model.as_(int),
+        device=AppContainer.device
     )
 
     # Needs access to agent container -> rag_system logic

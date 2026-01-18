@@ -1,26 +1,29 @@
 # scripts/benchmarks/run_benchmark_suite.py
+
 import logging
 import torch
 import time
 import psutil
 import os
 import sys
-from typing import Dict, Any, cast # Added cast
+from typing import Dict, Any, cast
 
 # Suppress Logs Early
 for lib in ['spikingjelly', 'spikingjelly.activation_based.base']:
     logging.getLogger(lib).setLevel(logging.ERROR)
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
+sys.path.append(os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '../..')))
 from snn_research.models.transformer.spiking_transformer import SpikingTransformerV2
 from snn_research.core.snn_core import SNNCore
+
 
 # --- Phase 2 Objectives ---
 TARGET_LATENCY_MS = 10.0  # Goal: < 10ms (Ideally < 5ms)
 
 logging.basicConfig(level=logging.INFO, format='%(message)s', force=True)
 logger = logging.getLogger(__name__)
+
 
 class BenchmarkSuite:
     def __init__(self):
@@ -38,11 +41,13 @@ class BenchmarkSuite:
     def measure_throughput_latency(self, model: torch.nn.Module, input_shape: tuple, batch_size: int = 1) -> tuple[float, float]:
         model.eval()
         model.to(self.device)
-        
+
         # Prepare Dummy Input
-        is_transformer = hasattr(model, 'input_ids') or 'Transformer' in model.__class__.__name__
+        is_transformer = hasattr(
+            model, 'input_ids') or 'Transformer' in model.__class__.__name__
         if is_transformer:
-            dummy_input = torch.randint(0, 100, (batch_size, input_shape[0])).to(self.device)
+            dummy_input = torch.randint(
+                0, 100, (batch_size, input_shape[0])).to(self.device)
         else:
             dummy_input = torch.randn(batch_size, *input_shape).to(self.device)
 
@@ -54,26 +59,34 @@ class BenchmarkSuite:
         # Warmup
         for _ in range(10):
             with torch.no_grad():
-                if is_transformer: _ = model(input_ids=dummy_input)
-                else: _ = model(dummy_input)
+                if is_transformer:
+                    _ = model(input_ids=dummy_input)
+                else:
+                    _ = model(dummy_input)
 
-        if self.device == "cuda": torch.cuda.synchronize()
-        elif self.device == "mps": torch.mps.synchronize()
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.device == "mps":
+            torch.mps.synchronize()
 
         # Measurement
         iterations = 50
         start_time = time.time()
         for _ in range(iterations):
             with torch.no_grad():
-                if is_transformer: _ = model(input_ids=dummy_input)
-                else: _ = model(dummy_input)
-        
-        if self.device == "cuda": torch.cuda.synchronize()
-        elif self.device == "mps": torch.mps.synchronize()
+                if is_transformer:
+                    _ = model(input_ids=dummy_input)
+                else:
+                    _ = model(dummy_input)
+
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.device == "mps":
+            torch.mps.synchronize()
 
         end_time = time.time()
         total_time = end_time - start_time
-        
+
         avg_latency_ms = (total_time / iterations) * 1000
         avg_latency_per_sample = avg_latency_ms / batch_size
         throughput = (batch_size * iterations) / total_time
@@ -90,15 +103,45 @@ class BenchmarkSuite:
                 "out_features": 10,
                 "tau": 2.0, "threshold": 1.0
             }
-            model = SNNCore(config=config, vocab_size=10)
-            tput, latency = self.measure_throughput_latency(model, (64,), batch_size=1)
+
+            # Initialize SNNCore
+            core = SNNCore(config=config, device=torch.device(self.device))
+
+            # Setup Topology
+            core.add_neuron_group("Input", 64)
+            core.add_neuron_group("Hidden", 128)
+            core.add_neuron_group("Output", 10)
+            core.add_projection("In->Hid", "Input", "Hidden")
+            core.add_projection("Hid->Out", "Hidden", "Output")
+
+            # Adapter for benchmark compatibility
+            class SNNCoreAdapter(torch.nn.Module):
+                def __init__(self, snn_core: SNNCore):
+                    super().__init__()
+                    self.snn_core = snn_core
+
+                def forward(self, x):
+                    # SNNCore.forward_step takes dict, returns dict
+                    out = self.snn_core.forward_step({"Input": x})
+                    return out
+
+                def reset_state(self):
+                    self.snn_core.reset_state()
+
+            model = SNNCoreAdapter(core)
+
+            tput, latency = self.measure_throughput_latency(
+                model, (64,), batch_size=1)
 
             self.results["SNN_Core"] = f"{latency:.4f} ms"
             status = "✅ PASS" if latency < TARGET_LATENCY_MS else "⚠️ WARN"
-            print(f"{status} SNN Core: {latency:.4f} ms (Target < {TARGET_LATENCY_MS} ms)")
+            print(
+                f"{status} SNN Core: {latency:.4f} ms (Target < {TARGET_LATENCY_MS} ms)")
 
         except Exception as e:
             print(f"❌ Error in Core SNN Benchmark: {e}")
+            import traceback
+            traceback.print_exc()
 
     def run_transformer_benchmarks(self):
         print("\n--- Running SFormer (T=1) Benchmarks ---")
@@ -109,11 +152,13 @@ class BenchmarkSuite:
                 dim_feedforward=128, time_steps=1, neuron_config=neuron_config,
                 img_size=64, patch_size=16
             )
-            tput, latency = self.measure_throughput_latency(model, (64,), batch_size=1)
-            
+            tput, latency = self.measure_throughput_latency(
+                model, (64,), batch_size=1)
+
             self.results["SFormer_T1"] = f"{latency:.4f} ms"
             status = "✅ PASS" if latency < TARGET_LATENCY_MS else "⚠️ WARN"
-            print(f"{status} SFormer (T=1): {latency:.4f} ms (Target < {TARGET_LATENCY_MS} ms)")
+            print(
+                f"{status} SFormer (T=1): {latency:.4f} ms (Target < {TARGET_LATENCY_MS} ms)")
         except Exception as e:
             print(f"❌ Error in SFormer Benchmark: {e}")
 
@@ -124,6 +169,7 @@ class BenchmarkSuite:
         for k, v in self.results.items():
             print(f"🔹 {k}: {v}")
         print("===========================================\n")
+
 
 if __name__ == "__main__":
     suite = BenchmarkSuite()

@@ -189,8 +189,10 @@ def test_memory_system_pipeline():
     cortex = Cortex()
 
     # 1. 短期記憶へ保存
-    hippocampus.store_episode({'source_input': 'A cat is a small animal.'})
-    hippocampus.store_episode({'source_input': 'A dog is a friendly pet.'})
+    # {'source_input': 'A cat is a small animal.'}
+    hippocampus.store_episode(torch.ones(1, 784))
+    # {'source_input': 'A dog is a friendly pet.'}
+    hippocampus.store_episode(torch.ones(1, 784))
     assert len(hippocampus.episodic_buffer) == 2
 
     # 2. 長期記憶へ固定化

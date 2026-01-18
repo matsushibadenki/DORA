@@ -29,10 +29,34 @@ class UniversalEncoder(nn.Module):
 
     def forward(self, x, modality: str = "text", **kwargs):
         # ダミー実装: ランダムなスパイクを返す
+        method = kwargs.get('method', 'rate')
         batch_size = 1
         if isinstance(x, torch.Tensor):
             batch_size = x.shape[0]
 
+        if method == 'latency':
+            # Latency Coding: Larger value -> Earlier spike
+            # Single spike per time window per feature
+            # Normalize x to [0, 1]
+            x_norm = (x - x.min()) / (x.max() - x.min() + 1e-6)
+
+            # Convert intensity to time_step (larger intensity = smaller step index)
+            spike_times = ((1.0 - x_norm) * (self.time_steps - 1)).long()
+
+            spikes = torch.zeros(batch_size, self.time_steps,
+                                 self.output_dim, device=self.device)
+
+            # Scatter spikes
+            # Create indices
+            b_indices = torch.arange(batch_size, device=self.device).unsqueeze(
+                1).expand(-1, self.output_dim)
+            f_indices = torch.arange(self.output_dim, device=self.device).unsqueeze(
+                0).expand(batch_size, -1)
+
+            spikes[b_indices, spike_times, f_indices] = 1.0
+            return spikes
+
+        # Default / Rate / Delta (dummy implementation)
         return (torch.rand(batch_size, self.time_steps, self.output_dim) > 0.95).float().to(self.device)
 
     # Alias for compatibility with Brain v4 and Agents

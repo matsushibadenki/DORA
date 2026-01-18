@@ -261,10 +261,19 @@ class BreakthroughTrainer(AbstractTrainer):
                             spikes = outputs[1]
                         if len(outputs) > 2:
                             mem = outputs[2]
-                        if len(outputs) > 3:
-                            aux_logits = outputs[3]
+                        # if len(outputs) > 3:
+                        #     aux_logits = outputs[3]
                     else:
                         logits = outputs
+
+                    # Handle Dict output (e.g. from SNNCore)
+                    # Keep safe
+                    if isinstance(logits, dict) or (isinstance(logits, dict) and len(logits) > 0):
+                        while isinstance(logits, dict) and len(logits) > 0:
+                            logits = list(logits.values())[0]
+
+                    if not isinstance(logits, torch.Tensor):
+                        logits = torch.tensor(logits, device=self.device)
 
                     if return_full_hiddens_flag:
                         loss_dict = self.criterion(
@@ -272,8 +281,14 @@ class BreakthroughTrainer(AbstractTrainer):
                         logits_for_acc = None
                     else:
                         logits_for_acc = logits
-                        loss_dict = self.criterion(
-                            logits, target_ids, spikes, mem, self.model, aux_logits=aux_logits)
+                        # Support both Custom Loss (5 args) and Standard Loss (2 args)
+                        try:
+                            loss_dict = self.criterion(
+                                logits, target_ids, spikes, mem, self.model)
+                        except TypeError:
+                            # Fallback for standard CrossEntropyLoss
+                            loss_value = self.criterion(logits, target_ids)
+                            loss_dict = {'total': loss_value}
 
             if is_train:
                 if self.optimizer is None:

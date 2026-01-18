@@ -113,7 +113,7 @@ class TestBrainIntegration(unittest.TestCase):
         # 診断レポート機能を使用して状態を確認
         report = self.astrocyte.get_diagnosis_report()
         self.assertIn("status", report)
-        self.assertEqual(report["status"], "HEALTHY")
+        self.assertEqual(report["status"], "NORMAL")
 
         logger.info(f"✅ Integration Diagnosis: {report['status']}")
 

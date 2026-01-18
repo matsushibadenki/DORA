@@ -4,7 +4,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from snn_research.core.neurons import AdaptiveLIFNeuron
 from snn_research.core.layers.bit_spike_layer import BitSpikeConv2d
@@ -123,3 +123,21 @@ class VisualCortex(nn.Module):
             raise ValueError(f"Unsupported input shape: {x.shape}")
 
         return torch.stack(outputs, dim=1)
+
+    def detect_objects(self, image_tensor: torch.Tensor) -> List[Dict[str, Any]]:
+        """
+        デモ用の簡易オブジェクト検出 (Mock/Heuristic)。
+        """
+        # 実際にはSNNでの検出は困難なため、デモ用にダミーまたは簡易的なヒューリスティックを返す
+        import random
+        objects = []
+
+        # ダミー検出結果
+        if random.random() > 0.1:  # 90% chance to detect
+            objects.append({
+                "label": "demo_object",
+                "bbox": [50, 50, 100, 100],  # x, y, w, h
+                "confidence": 0.95
+            })
+
+        return objects

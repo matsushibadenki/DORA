@@ -1,7 +1,7 @@
 # ファイルパス: tests/test_sleep_consolidation.py
 # 修正: float精度の問題で失敗するテストを修正 (double型を使用)
 
-import pytest
+
 import torch
 import torch.nn as nn
 from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
@@ -18,25 +18,40 @@ class MockBrain(nn.Module):
         return torch.randn(1, 2, dtype=torch.float64)
 
 
-def test_hebbian_reinforcement():
+def test_synaptic_pruning():
     brain = MockBrain()
-    consolidator = SleepConsolidator(
-        memory_system=None, target_brain_model=brain)
+    consolidator = SleepConsolidator(substrate=brain)
 
-    # Capture initial weights
-    initial_sum = brain.layer.weight.data.abs().sum().item()
+    # Manually set some weights to be small (should be pruned) and large (should stay)
+    with torch.no_grad():
+        brain.layer.weight.data.fill_(0.1)  # Above threshold (0.05)
+        brain.layer.weight.data[0, 0] = 0.01  # Below threshold
 
-    # Apply reinforcement with high clarity
-    # Implementation: param.data += (1e-5 * strength) * param.data * 0.01
-    # Total multiplier = 1 + (1e-5 * 1.0 * 0.01) = 1 + 1e-7
-    # Double precision allows detecting 1e-7 change.
-    consolidator._apply_hebbian_reinforcement(strength=1.0)
+    # Initial count
+    initial_active = (brain.layer.weight.data.abs() > 1e-6).sum().item()
+    assert initial_active == 20  # 2x10 matrix
 
-    new_sum = brain.layer.weight.data.abs().sum().item()
+    # Run pruning
+    pruned_count = consolidator._synaptic_pruning(threshold=0.05)
 
-    assert new_sum > initial_sum
+    # Check results
+    assert pruned_count == 1
+    assert brain.layer.weight.data[0, 0] == 0.0
+    # specific check for non-pruned
+    assert brain.layer.weight.data[0, 1] == 0.1
 
-    # Expected multiplier: 1 + 1e-7
-    expected_multiplier = 1.0 + (1e-5 * 0.01)
-    assert new_sum == pytest.approx(
-        initial_sum * expected_multiplier, rel=1e-8)
+
+def test_synaptogenesis():
+    brain = MockBrain()
+    consolidator = SleepConsolidator(substrate=brain)
+
+    # Manually set some weights to zero (candidates for creation)
+    with torch.no_grad():
+        brain.layer.weight.data.fill_(0.0)
+
+    # Run synaptogenesis with high rate to ensure some creation
+    created_count = consolidator._synaptogenesis(birth_rate=1.0)
+
+    # Check results
+    assert created_count > 0
+    assert (brain.layer.weight.data.abs() > 0).sum().item() == created_count

@@ -56,16 +56,22 @@ class SpikingWorldModel(BaseModel):
 
         # 3. Transition Model (SNN / SSM Core)
         # 過去の状態と行動から、次の潜在状態を予測する
+        # NOTE: SNNCore doesn't accept architecture or vocab_size directly.
+        # We manually build a simple recurrent topology.
         self.transition_model = SNNCore(
             config={
-                "d_model": d_model,
-                "num_layers": num_layers,
-                "time_steps": time_steps,
-                "neuron": neuron_config,
-                "architecture": "spiking_mamba"  # 高速な推論のためにMambaを採用
+                "dt": 1.0,
+                "tau_mem": neuron_config.get("tau_mem", 20.0),
+                "threshold": neuron_config.get("threshold", 1.0)
             },
-            vocab_size=d_model  # 出力は次の潜在状態(d_model次元)
+            # Will be updated in forward or handled by .to() if logic existed
+            device=torch.device("cpu")
         )
+
+        # Build Topology (Hidden Recurrent Layer)
+        self.transition_model.add_neuron_group("Hidden", d_model)
+        self.transition_model.add_projection(
+            "Hidden->Hidden", "Hidden", "Hidden")
 
         # 4. Decoder / Reward Predictor (Optional for reconstruction)
         # 潜在状態から各感覚を再構成するためのヘッド
@@ -109,18 +115,27 @@ class SpikingWorldModel(BaseModel):
 
         # --- 3. State Transition (Prediction) ---
         # 入力は「現在の状態 + 行動」
-        # 本来はRNN的にステップごとに回すが、ここでは並列学習用にまとめて入力
         transition_input = z_t + a_t
 
-        transition_out = self.transition_model(transition_input)
+        # SNN Sequence Processing Loop
+        # Ensure device is synced
+        if hasattr(self.transition_model, 'device'):
+            self.transition_model.device = transition_input.device
 
-        if isinstance(transition_out, tuple):
-            z_next_pred = transition_out[0]
-            # spikes = transition_out[1]
-            h_next = transition_out[2]
-        else:
-            z_next_pred = transition_out
-            h_next = None
+        z_next_preds_list = []
+        batch_size, seq_len, _ = transition_input.shape
+
+        for t in range(seq_len):
+            current_inp = transition_input[:, t, :]
+            # Execute one step of SNN
+            step_out = self.transition_model.forward_step(
+                {"Hidden": current_inp})
+            # Get output spikes
+            spikes = step_out["spikes"]["Hidden"]  # (B, D)
+            z_next_preds_list.append(spikes)
+
+        z_next_pred = torch.stack(z_next_preds_list, dim=1)  # (B, T, D)
+        h_next = None  # Hidden state not explicitly exposed in this simple wrapper
 
         # --- 4. Decode (Reconstruction) ---
         reconstructions = {}
@@ -140,8 +155,12 @@ class SpikingWorldModel(BaseModel):
         """
         self.eval()
         with torch.no_grad():
+            # Action needs to be (B, 1, ActionDim) if single step
+            if action.dim() == 2:
+                action = action.unsqueeze(1)
+
             z_pred, recons, _ = self(
-                current_sensory_inputs, action.unsqueeze(1))
+                current_sensory_inputs, action)
 
             # 再構成結果の最後のステップを返す
             next_senses = {k: v[:, -1, :] for k, v in recons.items()}

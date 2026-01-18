@@ -32,17 +32,17 @@ class SynestheticBrain(nn.Module):
         # 物理信号をスパイク列に変換
         self.encoder = UniversalSpikeEncoder(
             time_steps=time_steps,
-            d_model=d_model,
+            output_dim=d_model,
             device=device
         ).to(device)
 
         # 2. 五感統合ブリッジ (Unified Sensory Bridge)
         # 全ての感覚モダリティの定義と射影をここで行う
         modality_configs = {
-            'vision': 784,         # 画像特徴 (MNIST等)
-            'audio': 64,           # 音響特徴 (MFCC等)
-            'tactile': tactile_dim,
-            'olfactory': olfactory_dim
+            'vision': d_model,     # Output of Encoder is d_model
+            'audio': d_model,
+            'tactile': d_model,
+            'olfactory': d_model
         }
 
         self.sensory_bridge = UnifiedSensoryProjector(
@@ -111,7 +111,7 @@ class SynestheticBrain(nn.Module):
             combined_input = sensory_context
 
         # Phase 4: 統合処理 (Unified Processing)
-        logits, _, _ = self.core_brain(combined_input)
+        logits, _, _ = self.core_brain(combined_input, return_spikes=True)
 
         return logits
 

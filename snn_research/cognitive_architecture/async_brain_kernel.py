@@ -179,6 +179,24 @@ class ArtificialBrain:
 
         logger.info("🧠 ArtificialBrain (Legacy Sync) initialized for testing.")
 
+        # 3. Visual Cortex (Added for run_spatial_demo.py compatibility)
+        # Import manually to avoid circular imports at top if any
+        from snn_research.models.bio.visual_cortex import VisualCortex
+        self.visual_cortex = VisualCortex()
+
+    def image_transform(self, image):
+        """Standard transform for demo compatibility"""
+        from torchvision import transforms
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ])
+        return transform(image)
+
+    def run_cognitive_cycle(self, sensory_input: Any):
+        """Demo compatibility alias for process_step"""
+        return self.process_step(sensory_input)
+
     def process_step(self, sensory_input: Any):
         """
         Execute one cognitive cycle (Synchronous).

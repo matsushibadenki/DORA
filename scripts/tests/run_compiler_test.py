@@ -1,12 +1,13 @@
 # ファイルパス: scripts/runners/run_compiler_test.py
-from snn_research.hardware.compiler import NeuromorphicCompiler
-from snn_research.models.adapters.async_mamba_adapter import AsyncBitSpikeMambaAdapter
 import sys
 import os
 import logging
 
 sys.path.append(os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../..")))
+
+from snn_research.hardware.compiler import NeuromorphicCompiler
+from snn_research.models.adapters.async_mamba_adapter import AsyncBitSpikeMambaAdapter
 
 
 # ログ設定
