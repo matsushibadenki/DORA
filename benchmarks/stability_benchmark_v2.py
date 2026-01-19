@@ -1,15 +1,16 @@
-import torch
-import torch.nn.functional as F
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
 import sys
 import os
-import numpy as np
 import argparse
 import json
 import logging
 import time
 from datetime import datetime
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 from tqdm import tqdm
 
 # Path setup
@@ -42,7 +43,7 @@ def save_progress(epoch, accuracy, status="RUNNING"):
                 "accuracy": accuracy,
                 "status": status
             }, f)
-    except Exception as e:
+    except Exception:
         pass
 
 
@@ -64,32 +65,32 @@ def validate(model, loader, device, config):
     total = 0
 
     # Use standard SNN time usage
+    # Validation is always no_grad
+    with torch.no_grad():
+        for data, target in loader:
+            data, target = data.to(device), target.to(device)
+            batch_size = data.size(0)
+            goodness_matrix = torch.zeros(batch_size, 10, device=device)
 
-    for data, target in loader:
-        data, target = data.to(device), target.to(device)
-        batch_size = data.size(0)
-        goodness_matrix = torch.zeros(batch_size, 10, device=device)
+            for label in range(10):
+                y_candidate = torch.full((batch_size,), label, device=device)
+                x_in = overlay_y_on_x(data, y_candidate, device=device)
 
-        for label in range(10):
-            y_candidate = torch.full((batch_size,), label, device=device)
-            x_in = overlay_y_on_x(data, y_candidate, device=device)
-
-            model.reset_state()
-            with torch.no_grad():
+                model.reset_state()
                 for t in range(config["time_steps"]):
                     model(x_in, phase="test")
 
-            g_stats = model.get_goodness(reduction="none")
-            vals = [v for k, v in g_stats.items() if k.endswith("_goodness")]
-            if len(vals) > 0:
-                total_g = torch.stack(vals).sum(dim=0)
-            else:
-                total_g = torch.zeros(batch_size, device=device)
-            goodness_matrix[:, label] = total_g
+                g_stats = model.get_goodness(reduction="none")
+                vals = [v for k, v in g_stats.items() if k.endswith("_goodness")]
+                if len(vals) > 0:
+                    total_g = torch.stack(vals).sum(dim=0)
+                else:
+                    total_g = torch.zeros(batch_size, device=device)
+                goodness_matrix[:, label] = total_g
 
-        preds = goodness_matrix.argmax(dim=1)
-        correct += preds.eq(target).sum().item()
-        total += batch_size
+            preds = goodness_matrix.argmax(dim=1)
+            correct += preds.eq(target).sum().item()
+            total += batch_size
 
     if total == 0:
         return 0.0
@@ -106,7 +107,6 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
         "num_layers": 2,
         # Tuned for Learning: Higher LR, Lower Threshold
         "learning_rate": 0.05,  # Increased from 0.002
-        # Lower threshold to encourage activity 2.0 is standard for FF
         # Lower threshold to encourage activity 2.0 is standard for FF
         "ff_threshold": 2.0,    # Decreased from 5.0
         "tau_mem": 20.0,        # Fixed for stability (dt=1.0)
@@ -133,36 +133,49 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
         # Track epoch-level stats
         epoch_firing_rates = []
 
-        for data, target in tqdm(train_loader, desc=f"Trial {trial_id} Epoch {epoch}/{config['epochs']}", unit="batch"):
-            data, target = data.to(device), target.to(device)
-            batch_size = data.size(0)
+        # Forward-Forward does not use Backpropagation.
+        # We MUST use torch.no_grad() to prevent computational graph buildup.
+        with torch.no_grad():
+            for data, target in tqdm(train_loader, desc=f"Trial {trial_id} Epoch {epoch}/{config['epochs']}", unit="batch"):
+                data, target = data.to(device), target.to(device)
+                batch_size = data.size(0)
 
-            # Scale input to prevent immediate saturation
-            x_pos = overlay_y_on_x(data, target, device=device)
-            y_neg = (target + torch.randint(1, 10,
-                     (batch_size,), device=device)) % 10
-            x_neg = overlay_y_on_x(data, y_neg, device=device)
+                # Scale input to prevent immediate saturation
+                x_pos = overlay_y_on_x(data, target, device=device)
+                y_neg = (target + torch.randint(1, 10,
+                         (batch_size,), device=device)) % 10
+                x_neg = overlay_y_on_x(data, y_neg, device=device)
 
-            # Positive
-            model.reset_state()
-            for t in range(config["time_steps"]):
-                model(x_pos, phase="wake")
+                # Positive Phase (Wake)
+                model.reset_state()
+                for t in range(config["time_steps"]):
+                    model(x_pos, phase="wake")
 
-            # Debug: Capture firing rate after positive phase
-            state_pos = model.get_state()
-            epoch_firing_rates.append(state_pos["layers"]["V1"]["firing_rate"])
+                # Debug: Capture firing rate after positive phase
+                state_pos = model.get_state()
+                # Check key existence safely
+                if "V1" in state_pos["layers"]:
+                    epoch_firing_rates.append(
+                        state_pos["layers"]["V1"]["firing_rate"])
 
-            # Negative
-            model.reset_state()
-            for t in range(config["time_steps"]):
-                model(x_neg, phase="sleep")
+                # Negative Phase (Sleep/Dream)
+                model.reset_state()
+                for t in range(config["time_steps"]):
+                    model(x_neg, phase="sleep")
+
+        # Explicitly clear cache for MPS backend if needed
+        if device.type == "mps":
+            torch.mps.empty_cache()
+        elif device.type == "cuda":
+            torch.cuda.empty_cache()
 
         # Log average firing rate for V1
         avg_rate = sum(epoch_firing_rates) / \
             len(epoch_firing_rates) if epoch_firing_rates else 0.0
 
-        print(f"DEBUG_FIRING_RATE: {avg_rate}")
+        # print(f"DEBUG_FIRING_RATE: {avg_rate}") # Remove print for cleaner log
         try:
+            os.makedirs("workspace", exist_ok=True)
             with open("workspace/diagnosis_report.json", "w") as f:
                 json.dump({"last_firing_rate": avg_rate, "epoch": epoch}, f)
         except Exception:
@@ -170,24 +183,12 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
 
         logger.info(
             f"  Epoch {epoch} Avg Firing Rate (V1): {avg_rate:.4f} (Target ~0.1-0.5)")
-        logger.info(
-            f"  Epoch {epoch} Avg Firing Rate (V1): {avg_rate:.4f} (Target ~0.1-0.5)")
-
-        # Record detailed state occasionally
-        # We can't log every batch, too heavy.
-
-        # Validation per epoch (optional, but good for tracking)
-        # acc = validate(model, test_loader, device, config)
-        # logger.info(f"Epoch {epoch} Acc: {acc:.2f}%")
 
         # Log internal state sample
         state = model.get_state()
         history["layer_stats"].append(state["layers"])
 
         # Update Progress for Dashboard
-        # Estimate accuracy or use validation per epoch
-        # For speed transparency, we valid every epoch here if needed, or just log "Training"
-        # Let's do a quick check on test subset or just log epoch completion
         save_progress(
             epoch, 0.0, status=f"Training Trial {trial_id} - Epoch {epoch}/{config['epochs']}")
 
@@ -198,9 +199,10 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
     save_progress(config["epochs"], acc, status=f"Trial {trial_id} Finished")
 
     # Check "State Collapse" (if V1 weights are all zero or massive)
-    v1_stats = history["layer_stats"][-1]["V1"]
-    logger.info(
-        f"  V1 Final State: Mem={v1_stats['mean_mem']:.4f}, W_mean={v1_stats['weight_mean']:.4f}")
+    if "V1" in history["layer_stats"][-1]:
+        v1_stats = history["layer_stats"][-1]["V1"]
+        logger.info(
+            f"  V1 Final State: Mem={v1_stats['mean_mem']:.4f}, W_mean={v1_stats['weight_mean']:.4f}")
 
     return acc, history
 
@@ -219,12 +221,15 @@ def main():
 
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if torch.backends.mps.is_available():
+    # Device selection priority
+    device = torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
         device = torch.device("mps")
 
     logger.info(
-        f"Running Stability Benchmark v2.1: {args.runs} runs, Target > {args.threshold}%")
+        f"Running Stability Benchmark v2.1: {args.runs} runs, Target > {args.threshold}% on {device}")
 
     # Dataset Preparation (Once)
     base_transform = transforms.Compose([
@@ -232,7 +237,12 @@ def main():
         transforms.Normalize((0.1307,), (0.3081,)),
         transforms.Lambda(flatten_tensor)
     ])
-    data_dir = os.path.join(os.path.dirname(__file__), '../data')
+
+    # Ensure data directory exists
+    data_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), '../data'))
+    os.makedirs(data_dir, exist_ok=True)
+
     # Use subset for speed if basic test
     train_ds = datasets.MNIST(data_dir, train=True,
                               download=True, transform=base_transform)
@@ -242,9 +252,9 @@ def main():
         logger.info(f"Using subset of size {args.subset_size} for speed.")
         indices = torch.randperm(len(train_ds))[:args.subset_size]
         train_ds = torch.utils.data.Subset(train_ds, indices)
-        # Also limit test set to speed up validation?
-        # Maybe proportionate? Let's keep test set full or small fixed
-        test_indices = torch.randperm(len(test_ds))[:1000]
+
+        test_limit = min(1000, len(test_ds))
+        test_indices = torch.randperm(len(test_ds))[:test_limit]
         test_ds = torch.utils.data.Subset(test_ds, test_indices)
 
     train_loader = DataLoader(
@@ -255,7 +265,8 @@ def main():
     accuracies = []
 
     for i in range(args.runs):
-        acc, _ = run_single_trial(i+1, args, device, train_loader, test_loader)
+        acc, _ = run_single_trial(
+            i + 1, args, device, train_loader, test_loader)
         accuracies.append(acc)
 
     accuracies = np.array(accuracies)
@@ -274,13 +285,17 @@ def main():
         "timestamp": datetime.now().isoformat(),
         "config": vars(args),
         "accuracies": accuracies.tolist(),
-        "mean_accuracy": mean_acc,
-        "std_accuracy": std_acc,
-        "stability_score": success_rate
+        "mean_accuracy": float(mean_acc),
+        "std_accuracy": float(std_acc),
+        "stability_score": float(success_rate)
     }
 
-    with open("workspace/benchmarks/stability_benchmark_results.json", "w") as f:
-        json.dump(results, f, indent=4)
+    try:
+        os.makedirs("workspace/benchmarks", exist_ok=True)
+        with open("workspace/benchmarks/stability_benchmark_results.json", "w") as f:
+            json.dump(results, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to save benchmark results: {e}")
 
 
 if __name__ == "__main__":
