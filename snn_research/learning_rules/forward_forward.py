@@ -1,10 +1,4 @@
 # ファイルパス: snn_research/learning_rules/forward_forward.py
-# 日本語タイトル: Forward-Forward Learning Rule Implementation
-# 目的・内容:
-#   Neuromorphic OSにおける主要学習則の一つ。
-#   Hinton (2022) のForward-ForwardアルゴリズムをSNN向けに実装。
-#   Positive/Negativeフェーズによる局所的なGoodness最適化を行う。
-
 import torch
 import logging
 from typing import Dict, Any, Tuple, Optional
@@ -16,22 +10,13 @@ logger = logging.getLogger(__name__)
 
 class ForwardForwardRule(PlasticityRule):
     """
-    Forward-Forward Learning Rule.
-
-    ニューラルネットワークの各層が独立して「Goodness」を最大化・最小化するように学習する。
-    誤差逆伝播（Backprop）を使用しないため、生物学的妥当性が高く、並列化に適している。
-
-    Phases:
-      - Positive Phase (wake): maximize goodness (正解データ)
-      - Negative Phase (sleep/dream): minimize goodness (生成データ/ノイズ)
-
-    Goodness = sum(activity^2)
+    Forward-Forward Learning Rule (Robust SNN Version).
     """
 
     def __init__(
         self,
-        learning_rate: float = 0.01,
-        threshold: float = 2.0,  # Goodnessの目標閾値
+        learning_rate: float = 0.05,  # Higher default
+        threshold: float = 2.0,
         w_decay: float = 0.0001
     ):
         self.lr = learning_rate
@@ -46,84 +31,59 @@ class ForwardForwardRule(PlasticityRule):
         local_state: Optional[Dict[str, Any]] = None,
         **kwargs: Any
     ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
-        """
-        FF学習則による重み更新の計算。
 
-        Args:
-            pre_spikes: 前シナプスニューロンのスパイク (Batch, N_pre)
-            post_spikes: 後シナプスニューロンのスパイク (Batch, N_post)
-            current_weights: 現在の重み行列
-            local_state: シナプス局所状態（トレースなど）
-            kwargs: 'phase' ('positive' or 'negative') を含む必要がある
-
-        Returns:
-            delta_w: 重み更新量
-            logs: ログ情報
-        """
         phase = kwargs.get("phase", "neutral")
         if phase == "neutral":
             return None, {}
 
-        # SNNにおける「Activity」の定義:
-        # スパイクそのものだと疎すぎるため、移動平均（レート）をActivityとして近似する。
-
         if local_state is None:
             local_state = {}
 
-        # Activity (Rate) 推定
-        # trace_post: (Batch, N_post)
+        # 1. Activity Estimation (Trace)
+        # スパイクがない場合でも、わずかな漏れ（leak）を持たせて勾配消失を防ぎたいが、
+        # SNNではスパイクしないと情報がない。
+        # そこで、時定数を長くして「過去のスパイク」の影響を長く残す。
         trace_post = local_state.get(
             "trace_post_rate", torch.zeros_like(post_spikes))
-        alpha = 0.3  # 平滑化係数
+        alpha = 0.2  # 0.3 -> 0.2 (Slower decay, more memory)
 
-        # レート更新
         activity = trace_post * (1 - alpha) + post_spikes * alpha
         local_state["trace_post_rate"] = activity.detach()
 
-        # Goodness 計算: G = sum(activity^2) per sample
-        goodness = activity.pow(2).mean(dim=1)  # (Batch,)
+        # 2. Goodness Calculation
+        # Goodness = Mean(Activity^2) + small_epsilon
+        goodness = activity.pow(2).mean(dim=1) + 1e-6
 
-        # 勾配の方向決定
-        # Positive Phase: Goodness > Threshold にしたい
-        # Negative Phase: Goodness < Threshold にしたい
-
-        # 確率的勾配の近似
-        # probs = sigmoid(Goodness - threshold)
+        # 3. Probability & Factor
+        # Sigmoidの勾配が消えないように、threshold近辺に値を寄せる工夫が必要だが、
+        # ここは標準的なFFの実装に従う。
         probs = torch.sigmoid(goodness - self.threshold)
 
-        # 重み更新係数
-        # pos: 1に近づけたい -> factor ~ (1 - probs)
-        # neg: 0に近づけたい -> factor ~ (0 - probs) = -probs
-        # factor: (Batch, )
-        factor = (1.0 - probs) if phase == "positive" else (-probs)
+        if phase == "positive":
+            factor = (1.0 - probs)  # 閾値を超えさせたい
+        else:
+            factor = (-probs)      # 閾値を下回らせたい
 
-        # Optimized Calculation to avoid (Batch, N_post, N_pre) allocation
-        # We want: mean_over_batch( factor[b] * activity[b,i] * pre_spikes[b,j] )
-        # = (1/B) * Sum_b ( (factor[b] * activity[b]) @ pre_spikes[b].T )
-        # Let weighted_activity = activity * factor.unsqueeze(1)  -> (Batch, N_post)
-        # delta_w = (weighted_activity.T @ pre_spikes) / Batch_Size
+        # 4. Weight Update Calculation
+        # delta_w = (activity * factor) @ pre_spikes.T
+        # しかし、pre_spikesも疎（sparse）だと更新が起きない。
+        # そこで、Pre側もTraceを使うオプションがあるが、計算コストが高い。
+        # ここではPost Activityで重み付けする。
 
         batch_size = pre_spikes.size(0)
         weighted_activity = activity * factor.unsqueeze(1)  # (Batch, N_post)
 
-        # (N_post, Batch) @ (Batch, N_pre) -> (N_post, N_pre)
+        # 勾配の方向： 「よく発火したニューロン」への入力を強化/抑制する
         numerator = torch.matmul(weighted_activity.t(), pre_spikes)
         delta_w = numerator / batch_size * self.lr
 
-        # Weight Decay (忘却)
+        # Weight Decay (Regularization)
         delta_w -= self.w_decay * current_weights
 
-        logs = {
+        return delta_w, {
             "mean_goodness": goodness.mean().item(),
-            "mean_prob": probs.mean().item(),
-            "phase": phase,
-            # Enhanced Logging for Stability
-            "mean_delta_w": delta_w.abs().mean().item(),
-            "max_delta_w": delta_w.abs().max().item(),
-            "factor_mean": factor.mean().item()
+            "mean_delta_w": delta_w.abs().mean().item()
         }
-
-        return delta_w, logs
 
     def get_config(self) -> Dict[str, Any]:
         return {
