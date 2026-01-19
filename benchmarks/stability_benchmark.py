@@ -180,7 +180,7 @@ def main():
         "stability_score": success_rate
     }
 
-    with open("stability_benchmark_results.json", "w") as f:
+    with open("workspace/stability_benchmark_results.json", "w") as f:
         json.dump(results, f, indent=4)
 
 

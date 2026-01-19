@@ -20,19 +20,19 @@ def mock_agent():
         f.write(
             "training:\n  gradient_based:\n    learning_rate: 0.001\n    loss:\n      weight_decay: 0.0001")
 
-    with open("tests/temp_configs/test_model.yaml", "w") as f:
+    tests/temp_configs/test_model.yaml", "w") as f:
         f.write("model:\n  d_model: 128\n  neuron:\n    type: \"lif\"")
 
     agent = SelfEvolvingAgentMaster(
-        name="TestAgent",
-        planner=MagicMock(spec=HierarchicalPlanner),
-        model_registry=MagicMock(spec=ModelRegistry),
-        memory=MagicMock(),
-        web_crawler=MagicMock(spec=WebCrawler),
-        meta_cognitive_snn=MagicMock(spec=MetaCognitiveSNN),
-        motivation_system=MagicMock(spec=IntrinsicMotivationSystem),
-        training_config_path="tests/temp_configs/test_training.yaml",
-        model_config_path="tests/temp_configs/test_model.yaml"
+        name = "TestAgent",
+        planner = MagicMock(spec=HierarchicalPlanner),
+        model_registry = MagicMock(spec=ModelRegistry),
+        memory = MagicMock(),
+        web_crawler = MagicMock(spec=WebCrawler),
+        meta_cognitive_snn = MagicMock(spec=MetaCognitiveSNN),
+        motivation_system = MagicMock(spec=IntrinsicMotivationSystem),
+        training_config_path = "tests/temp_configs/test_training.yaml",
+        model_config_path = "tests/temp_configs/test_model.yaml"
     )
     # Redirect evolved configs output
     agent.evolved_config_dir = "tests/temp_configs/evolved"
@@ -46,7 +46,7 @@ def mock_agent():
 
 def test_evolve_learning_parameters(mock_agent):
     result = mock_agent._evolve_learning_parameters(
-        performance_eval={}, internal_state={}, scope="global"
+        performance_eval = {}, internal_state = {}, scope = "global"
     )
     assert "Successfully evolved parameters" in result
     assert "test_training_params_" in result
@@ -54,7 +54,7 @@ def test_evolve_learning_parameters(mock_agent):
 
 def test_evolve_neuron_type(mock_agent):
     result = mock_agent._evolve_neuron_type(
-        performance_eval={}, internal_state={}
+        performance_eval = {}, internal_state = {}
     )
     assert "Successfully evolved neuron type" in result
     assert "test_model_neuron_" in result

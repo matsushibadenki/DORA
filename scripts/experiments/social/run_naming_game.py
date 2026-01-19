@@ -1,3 +1,6 @@
+from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
+from snn_research.cognitive_architecture.rag_snn import RAGSystem
+from snn_research.social.emergent_language import Agent, NamingGameSimulation
 import logging
 import os
 import sys
@@ -6,10 +9,6 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(
     os.path.dirname(__file__), "../../..")))
 
-from snn_research.social.emergent_language import Agent, NamingGameSimulation
-from snn_research.cognitive_architecture.rag_snn import RAGSystem
-from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
-from snn_research.social.emergent_language import Agent, NamingGameSimulation
 
 logging.basicConfig(level=logging.INFO)
 
@@ -40,7 +39,7 @@ def run_simulation():
     print(f"Alice Vocab Size: {len(agent_a.vocabulary)}")
     print(f"Bob Vocab Size: {len(agent_b.vocabulary)}")
 
-    with open("naming_game_result.txt", "w") as f:
+    with open("workspace/naming_game_result.txt", "w") as f:
         f.write(
             f"Success Rate: {game.success_count/game.total_rounds*100:.1f}%\n")
         f.write(f"Alice Vocab: {len(agent_a.vocabulary)}\n")
