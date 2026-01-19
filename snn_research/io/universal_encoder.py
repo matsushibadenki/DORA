@@ -62,6 +62,7 @@ class UniversalEncoder(nn.Module):
     # Alias for compatibility with Brain v4 and Agents
     encode = forward
     encode_text = forward
+    encode_text_str = forward
 
 
 # Legacy support / Alias

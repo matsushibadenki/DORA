@@ -7,33 +7,36 @@
 import torch
 import torch.nn as nn
 import random
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
 from collections import deque
+
 
 class Hippocampus(nn.Module):
     """
     Hippocampal Episodic Memory System.
-    
+
     役割:
     1. Encoding: 感覚入力（V1/Association）のパターンを一時的に保持する。
     2. Replay: 保持したパターンをノイズ付きで再生成し、皮質の学習を促進する。
     """
-    def __init__(self, capacity: int = 200, input_dim: int = 784, device: str = "cpu"):
+
+    def __init__(self, capacity: int = 200, input_dim: int = 784, device: str = "cpu", **kwargs: Any):
         super().__init__()
         self.capacity = capacity
         self.device = device
-        
+        self.rag_system = kwargs.get("rag_system")
+
         # エピソードバッファ (FIFO)
         # 実際の海馬はニューラルネットワークだが、ここでは機能モデルとしてdequeを使用
         self.episodic_buffer: deque = deque(maxlen=capacity)
-        
+
     def store_episode(self, pattern: torch.Tensor):
         """
         覚醒時の経験（パターン）を保存する。
         入力が十分に強い（意味がある）場合のみ保存するフィルタリングを行う。
         """
         # バッチ次元を落として保存
-        if pattern.sum() > 0.1: # 無音/無信号は無視
+        if pattern.sum() > 0.1:  # 無音/無信号は無視
             detached_pattern = pattern.detach().cpu()
             self.episodic_buffer.append(detached_pattern)
 
@@ -43,16 +46,17 @@ class Hippocampus(nn.Module):
         """
         if len(self.episodic_buffer) < 1:
             return None
-            
+
         # ランダムサンプリング
-        episodes = random.sample(self.episodic_buffer, k=min(len(self.episodic_buffer), batch_size))
-        
+        episodes = random.sample(self.episodic_buffer, k=min(
+            len(self.episodic_buffer), batch_size))
+
         # テンソル化してデバイスへ転送
         replay_batch = torch.stack(episodes).to(self.device)
-        
+
         # ノイズ付与（汎化性能の向上と、夢の不確実性の表現）
         noise = torch.randn_like(replay_batch) * noise_level
-        
+
         return replay_batch + noise
 
     def clear_memory(self):
@@ -64,3 +68,16 @@ class Hippocampus(nn.Module):
             "stored_episodes": len(self.episodic_buffer),
             "capacity": self.capacity
         }
+
+    def process(self, pattern: Any):
+        """Standard processing alias for autonomous loop."""
+        if isinstance(pattern, dict):
+            # Try to extract tensor from episode dict
+            if "observation" in pattern and isinstance(pattern["observation"], torch.Tensor):
+                self.store_episode(pattern["observation"])
+            elif "state" in pattern and isinstance(pattern["state"], torch.Tensor):
+                self.store_episode(pattern["state"])
+            # If no tensor found, maybe log or skip
+        elif isinstance(pattern, torch.Tensor):
+            self.store_episode(pattern)
+        return pattern  # Return input as processed signal

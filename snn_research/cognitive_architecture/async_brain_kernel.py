@@ -224,4 +224,30 @@ class ArtificialBrain:
             self.hippocampus.store_episode(torch.zeros(784))
         # self.hippocampus.store_event(perceived)
 
+        # self.hippocampus.store_event(perceived)
+
         return {"status": "processed", "input": sensory_input}
+
+    # --- Legacy / Compatibility Methods ---
+    @property
+    def thinking_engine(self):
+        """Alias for PFC/Cortex for legacy scripts."""
+        return self.pfc
+
+    @property
+    def state(self) -> str:
+        """Return current brain state (WAKE/SLEEP)."""
+        return self.astrocyte.get_diagnosis_report().get("status", "NORMAL")
+
+    def sleep_cycle(self):
+        """Legacy sleep cycle trigger."""
+        self.astrocyte.replenish_energy(100.0)
+        self.astrocyte.clear_fatigue(100.0)
+
+    def get_brain_status(self) -> Dict[str, Any]:
+        """Legacy status report."""
+        return {
+            "state": self.state,
+            "energy": self.astrocyte.energy,
+            "fatigue": self.astrocyte.fatigue
+        }

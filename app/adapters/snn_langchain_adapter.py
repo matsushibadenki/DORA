@@ -16,9 +16,10 @@ from langchain_core.outputs import GenerationChunk
 from typing import Any, List, Mapping, Optional, Iterator
 from app.deployment import SNNInferenceEngine
 
+
 class SNNLangChainAdapter(LLM):
     """SNNInferenceEngineをラップするLangChainカスタムLLMクラス。"""
-    
+
     snn_engine: SNNInferenceEngine
 
     @property
@@ -46,16 +47,32 @@ class SNNLangChainAdapter(LLM):
         **kwargs: Any,
     ) -> Iterator[GenerationChunk]:
         """SNNエンジンからテキストをストリーミングし、LangChainコールバックを呼び出す。"""
-        max_len = self.snn_engine.config.deployment.get("max_len", 50)
-        
-        # SNNInferenceEngineのジェネレータを直接使用
-        for chunk_text, _ in self.snn_engine.generate(prompt, max_len=max_len, stop_sequences=stop):
-            chunk = GenerationChunk(text=chunk_text)
-            yield chunk
-            if run_manager:
-                run_manager.on_llm_new_token(chunk.text, chunk=chunk)
+        # Helper to get deployment config safely
+        config = getattr(self.snn_engine, "config", {})
+        deployment_conf = config.get("deployment", {}) if isinstance(
+            config, dict) else getattr(config, "deployment", {})
+        if isinstance(deployment_conf, dict):
+            max_len = deployment_conf.get("max_len", 50)
+        else:
+            max_len = getattr(deployment_conf, "max_len", 50)
+
+        # SNNInferenceEngineのジェネレータを直接使用 (generate or predict)
+        generator = getattr(self.snn_engine, "generate",
+                            getattr(self.snn_engine, "predict", None))
+
+        if generator:
+            for chunk_text, _ in generator(prompt, max_len=max_len, stop_sequences=stop):
+                chunk = GenerationChunk(text=chunk_text)
+                yield chunk
+                if run_manager:
+                    run_manager.on_llm_new_token(chunk.text, chunk=chunk)
 
     @property
     def _identifying_params(self) -> Mapping[str, Any]:
         """モデルの識別パラメータを返す。"""
-        return {"model_path": self.snn_engine.config.deployment.get("path")}
+        config = getattr(self.snn_engine, "config", {})
+        dep_conf = config.get("deployment", {}) if isinstance(
+            config, dict) else getattr(config, "deployment", {})
+        path = dep_conf.get("path") if isinstance(
+            dep_conf, dict) else getattr(dep_conf, "path", "unknown")
+        return {"model_path": path}

@@ -13,13 +13,14 @@ from snn_research.learning_rules.base_rule import PlasticityRule
 
 logger = logging.getLogger(__name__)
 
+
 class STDPRule(PlasticityRule):
     """
     Spike-Timing-Dependent Plasticity (STDP) Rule.
-    
+
     dw = A_plus * pre_trace * post_spike  (LTP: Pre -> Post)
        - A_minus * post_trace * pre_spike (LTD: Post -> Pre)
-       
+
     Args:
         learning_rate (float): 基本学習率
         tau_pre (float): 前シナプストレースの時定数 (ms)
@@ -38,22 +39,22 @@ class STDPRule(PlasticityRule):
         self.tau_pre = tau_pre
         self.tau_post = tau_post
         self.w_max = w_max
-        
+
         # LTP/LTDのバランス比率
         self.A_plus = 1.0
-        self.A_minus = 1.05 # LTDをわずかに強くして発火暴走を防ぐ
+        self.A_minus = 1.05  # LTDをわずかに強くして発火暴走を防ぐ
 
     def update(
-        self, 
-        pre_spikes: torch.Tensor, 
-        post_spikes: torch.Tensor, 
-        current_weights: torch.Tensor, 
+        self,
+        pre_spikes: torch.Tensor,
+        post_spikes: torch.Tensor,
+        current_weights: torch.Tensor,
         local_state: Optional[Dict[str, Any]] = None,
         **kwargs: Any
     ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
         """
         STDPによる重み更新計算。
-        
+
         Args:
             pre_spikes (Tensor): (Batch, N_pre)
             post_spikes (Tensor): (Batch, N_post)
@@ -64,18 +65,19 @@ class STDPRule(PlasticityRule):
             local_state = {}
 
         batch_size = pre_spikes.shape[0]
-        dt = kwargs.get("dt", 1.0) # タイムステップ幅
+        dt = kwargs.get("dt", 1.0)  # タイムステップ幅
 
         # --- 1. Trace Update ---
         # トレース: スパイクが発生すると1にジャンプし、指数関数的に減衰する値
-        
+
         # Pre-synaptic trace
         trace_pre = local_state.get("trace_pre", torch.zeros_like(pre_spikes))
         decay_pre = 1.0 - (dt / self.tau_pre)
         trace_pre = trace_pre * decay_pre + pre_spikes
-        
+
         # Post-synaptic trace
-        trace_post = local_state.get("trace_post", torch.zeros_like(post_spikes))
+        trace_post = local_state.get(
+            "trace_post", torch.zeros_like(post_spikes))
         decay_post = 1.0 - (dt / self.tau_post)
         trace_post = trace_post * decay_post + post_spikes
 
@@ -87,12 +89,14 @@ class STDPRule(PlasticityRule):
         # LTP: Pre Trace + Post Spike (Preが先に発火し、その影響が残っている間にPostが発火)
         # (Batch, N_post, 1) * (Batch, 1, N_pre) -> (Batch, N_post, N_pre)
         # post_spikesを使うタイミングでLTPが発生
-        delta_w_ltp = torch.einsum("bi,bj->bij", post_spikes, trace_pre) * self.A_plus
+        delta_w_ltp = torch.einsum(
+            "bi,bj->bij", post_spikes, trace_pre) * self.A_plus
 
         # LTD: Post Trace + Pre Spike (Postが先に発火し、その後Preが発火 -> 因果逆転)
         # pre_spikesを使うタイミングでLTDが発生
-        delta_w_ltd = torch.einsum("bi,bj->bij", trace_post, pre_spikes) * self.A_minus
-        
+        delta_w_ltd = torch.einsum(
+            "bi,bj->bij", trace_post, pre_spikes) * self.A_minus
+
         # 統合
         delta_w = (delta_w_ltp - delta_w_ltd).mean(dim=0) * self.lr
 
@@ -115,3 +119,7 @@ class STDPRule(PlasticityRule):
             "tau_pre": self.tau_pre,
             "tau_post": self.tau_post
         }
+
+
+# --- Alias for Backward Compatibility ---
+STDP = STDPRule

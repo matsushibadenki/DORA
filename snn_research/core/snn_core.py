@@ -8,7 +8,7 @@
 import logging
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, cast
 
 # Import Native LIFNeuron
 try:
@@ -72,7 +72,7 @@ class SpikingNeuralSubstrate(nn.Module):
     明示的な時間ステップまたはイベント駆動で状態を更新する。
     """
 
-    def __init__(self, config: Dict[str, Any], device: torch.device):
+    def __init__(self, config: Dict[str, Any], device: torch.device = torch.device('cpu'), **kwargs: Any):
         super().__init__()
         self.config = config
         self.device = device
@@ -85,7 +85,7 @@ class SpikingNeuralSubstrate(nn.Module):
         self.topology: List[Dict[str, str]] = []
 
         # 前回のスパイク状態（STDP等で使用）
-        self.prev_spikes: Dict[str, torch.Tensor] = {}
+        self.prev_spikes: Dict[str, Optional[torch.Tensor]] = {}
 
         logger.info("⚡ SpikingNeuralSubstrate initialized.")
 
@@ -117,8 +117,8 @@ class SpikingNeuralSubstrate(nn.Module):
         if source not in self.neuron_groups or target not in self.neuron_groups:
             raise ValueError(f"Source {source} or Target {target} not found.")
 
-        src_dim = self.neuron_groups[source].features  # type: ignore
-        tgt_dim = self.neuron_groups[target].features  # type: ignore
+        src_dim = int(self.neuron_groups[source].features)  # type: ignore
+        tgt_dim = int(self.neuron_groups[target].features)  # type: ignore
 
         projection = SynapticProjection(src_dim, tgt_dim, plasticity_rule)
         self.projections[name] = projection.to(self.device)
@@ -126,7 +126,21 @@ class SpikingNeuralSubstrate(nn.Module):
         self.topology.append({"name": name, "src": source, "tgt": target})
         logger.debug(f"  + Projection added: {name} ({source} -> {target})")
 
-    def forward_step(self, external_inputs: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
+    def get_firing_rates(self) -> Dict[str, float]:
+        """
+        Calculates the mean firing rate for each neuron group.
+        Returns:
+            Dict[str, float]: Mapping from group name to mean firing rate.
+        """
+        rates = {}
+        for name, spikes in self.prev_spikes.items():
+            if spikes is not None:
+                rates[name] = float(spikes.mean().item())
+            else:
+                rates[name] = 0.0
+        return rates
+
+    def forward_step(self, external_inputs: Dict[str, torch.Tensor], **kwargs) -> Dict[str, Any]:
         """
         1タイムステップ分のシミュレーションを進める。
         kwargsには 'phase' (wake/sleep) などが含まれる。
@@ -141,8 +155,9 @@ class SpikingNeuralSubstrate(nn.Module):
 
         for name, group in self.neuron_groups.items():
             # type: ignore
-            if self.prev_spikes[name] is None or self.prev_spikes[name].shape[0] != batch_size:
-                num_neurons = group.features  # type: ignore
+            prev = self.prev_spikes.get(name)
+            if prev is None or prev.shape[0] != batch_size:
+                num_neurons = int(getattr(group, "features", 0))  # Cast to int
                 self.prev_spikes[name] = torch.zeros(
                     batch_size, num_neurons, device=self.device)
 
@@ -188,7 +203,8 @@ class SpikingNeuralSubstrate(nn.Module):
             if name in current_inputs:
                 input_current = current_inputs[name]
             else:
-                num_neurons = group.features  # type: ignore
+                # Explicit cast
+                num_neurons = int(getattr(group, "features", 0))
                 input_current = torch.zeros(
                     batch_size, num_neurons, device=self.device)
 
@@ -203,14 +219,14 @@ class SpikingNeuralSubstrate(nn.Module):
             src_name = conn['src']
             tgt_name = conn['tgt']
 
-            proj_module = self.projections[proj_name]  # type: ignore
+            proj_module_plastic: Any = self.projections[proj_name]
 
-            if hasattr(proj_module, 'plasticity_rule') and proj_module.plasticity_rule is not None:
+            if hasattr(proj_module_plastic, 'plasticity_rule') and proj_module_plastic.plasticity_rule is not None:
                 src_spikes_prev = self.prev_spikes[src_name]
                 tgt_spikes_curr = current_spikes[tgt_name]
 
                 # ここで phase や dt などの情報を学習則に渡す
-                proj_module.apply_plasticity(
+                proj_module_plastic.apply_plasticity(
                     pre_spikes=src_spikes_prev,
                     post_spikes=tgt_spikes_curr,
                     dt=self.dt,
@@ -218,7 +234,8 @@ class SpikingNeuralSubstrate(nn.Module):
                 )
 
         # 4. Update State
-        self.prev_spikes = current_spikes
+        self.prev_spikes = cast(
+            Dict[str, Optional[torch.Tensor]], current_spikes)
 
         return {
             "spikes": current_spikes
@@ -235,6 +252,14 @@ class SpikingNeuralSubstrate(nn.Module):
             self.prev_spikes[name] = None
 
         logger.info("🔄 Substrate state reset.")
+
+    def get_total_spikes(self) -> int:
+        """全ニューロンのスパイク総数を返す"""
+        total = 0
+        for spikes in self.prev_spikes.values():
+            if spikes is not None:
+                total += int(spikes.sum().item())
+        return total
 
 
 # --- Alias for Backward Compatibility ---

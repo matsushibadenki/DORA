@@ -5,20 +5,22 @@
 #   自律的な行動生成の最上位ループ制御を行う。
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 
 logger = logging.getLogger(__name__)
 
+
 class NeuromorphicScheduler:
     """
     Decides the system's phase (Wake, Sleep, Dream) based on homeostasis.
     """
+
     def __init__(self, astrocyte: AstrocyteNetwork, global_workspace: GlobalWorkspace):
         self.astrocyte = astrocyte
         self.global_workspace = global_workspace
-        
+
         self.current_phase = "wake"
         self.phase_duration = 0
         self.task_queue: List[str] = []
@@ -41,19 +43,21 @@ class NeuromorphicScheduler:
             if metrics["energy"] < (metrics["max_energy"] * 0.1) or \
                metrics["fatigue"] > metrics["fatigue_threshold"]:
                 self._transition_to("sleep")
-                logs.append({"event": "phase_change", "to": "sleep", "reason": "exhaustion"})
-        
+                logs.append({"event": "phase_change",
+                            "to": "sleep", "reason": "exhaustion"})
+
         elif self.current_phase == "sleep":
             if metrics["energy"] > (metrics["max_energy"] * 0.9) and \
                metrics["fatigue"] < (metrics["fatigue_threshold"] * 0.1):
                 self._transition_to("wake")
-                logs.append({"event": "phase_change", "to": "wake", "reason": "recovered"})
+                logs.append({"event": "phase_change",
+                            "to": "wake", "reason": "recovered"})
 
         # Update Workspace context based on phase
         if self.current_phase == "sleep":
             # 睡眠中は外部入力を遮断し、内部生成モードへ
             pass
-            
+
         return logs
 
     def _transition_to(self, new_phase: str):
@@ -66,3 +70,21 @@ class NeuromorphicScheduler:
 
     def get_current_phase(self) -> str:
         return self.current_phase
+
+
+class BrainProcess:
+    """Mock process for OS simulation compatibility."""
+
+    def __init__(self, name: str, priority: float = 0.5):
+        self.name = name
+        self.priority = priority
+
+
+class ProcessBid:
+    """Mock bid for OS simulation compatibility."""
+
+    def __init__(self, process: Union[BrainProcess, str], bid_value: float, cost: float = 0.0, intent: str = ""):
+        self.process = process
+        self.bid_value = bid_value
+        self.cost = cost
+        self.intent = intent

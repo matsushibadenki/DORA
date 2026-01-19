@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple, Optional
 import torch
 
+
 class PlasticityRule(ABC):
     """
     Abstract base class for synaptic plasticity rules.
@@ -16,13 +17,13 @@ class PlasticityRule(ABC):
 
     @abstractmethod
     def update(
-        self, 
-        pre_spikes: torch.Tensor, 
-        post_spikes: torch.Tensor, 
-        current_weights: torch.Tensor, 
+        self,
+        pre_spikes: torch.Tensor,
+        post_spikes: torch.Tensor,
+        current_weights: torch.Tensor,
         local_state: Optional[Dict[str, Any]] = None,
         **kwargs: Any
-    ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
+    ) -> Tuple[Optional[torch.Tensor], Any]:
         """
         Calculate weight updates based on local activity.
 
@@ -43,6 +44,7 @@ class PlasticityRule(ABC):
     def get_config(self) -> Dict[str, Any]:
         """Return configuration parameters for serialization."""
         return {}
+
 
 # --- Alias for Backward Compatibility ---
 # これにより、古いコードが 'BioLearningRule' をインポートしてもエラーにならない

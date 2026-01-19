@@ -171,7 +171,7 @@ class ContinualTrainer(ForwardForwardTrainer):
                     x_neg_final = layer(x_neg_final)
 
             total_loss += batch_loss
-            pbar.set_postfix({"loss": f"{batch_loss.item():.4f}"})
+            pbar.set_postfix({"loss": f"{batch_loss:.4f}"})
 
         return {"train_loss": total_loss / len(train_loader)}
 

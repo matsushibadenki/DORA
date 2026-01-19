@@ -4,7 +4,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, cast, List
 
 from snn_research.core.snn_core import SpikingNeuralSubstrate
 from snn_research.learning_rules.forward_forward import ForwardForwardRule
@@ -141,8 +141,9 @@ class VisualCortex(nn.Module):
                             # Normalize Membrane Potential in-place to keep it conditioned
                             # V <- LN(V)
                             # This prevents "voltage explosion"
-                            normed_mem = self.layer_norms[name](group.mem)
-                            group.mem.copy_(normed_mem)
+                            normed_mem = self.layer_norms[name](
+                                group.mem)  # type: ignore
+                            group.mem.copy_(normed_mem)  # type: ignore
 
         return out
 
@@ -154,7 +155,7 @@ class VisualCortex(nn.Module):
         Args:
             reduction: "mean" (scalar), "none" (tensor per batch), "sum" (scalar sum)
         """
-        stats = {}
+        stats: Dict[str, Union[float, torch.Tensor]] = {}
         # Calculate goodness for each hidden layer
         for i in range(self.num_layers):
             layer_name = f"V{i+1}"
@@ -165,10 +166,12 @@ class VisualCortex(nn.Module):
                 if hasattr(neuron_group, "mem"):
                     # Use Membrane Potential for Goodness (richer signal than binary spikes)
                     # V^2 mean
-                    mem = neuron_group.mem  # (Batch, Features)
+                    # (Batch, Features)
+                    mem = cast(torch.Tensor, neuron_group.mem)
                     # Use absolute value or squared for energy? FF usually uses squared length of activity.
                     # Here we use squared membrane potential as proxy for "activity magnitude"
-                    goodness = mem.pow(2).mean(dim=1)  # (Batch,)
+                    # (Batch,)  # type: ignore
+                    goodness = mem.pow(2).mean(dim=1)
                 else:
                     # Fallback to spike rate if mem not available
                     goodness = spikes.float().mean(dim=1)  # (Batch,)
@@ -186,8 +189,10 @@ class VisualCortex(nn.Module):
 
                 # Add Debug Stats if reduction is mean
                 if reduction == "mean":
-                    stats[f"{layer_name}_mean_mem"] = neuron_group.mem.mean().item()
-                    stats[f"{layer_name}_std_mem"] = neuron_group.mem.std().item()
+                    if hasattr(neuron_group, "mem"):
+                        mem_t = cast(torch.Tensor, neuron_group.mem)
+                        stats[f"{layer_name}_mean_mem"] = mem_t.mean().item()
+                        stats[f"{layer_name}_std_mem"] = mem_t.std().item()
 
         return stats
 
@@ -204,11 +209,13 @@ class VisualCortex(nn.Module):
             if name in self.substrate.neuron_groups:
                 group = self.substrate.neuron_groups[name]
                 # Additional Stability Metrics
-                weights = []
+                weights: List[torch.Tensor] = []
                 # Find input projections to this layer
                 for proj_name, proj in self.substrate.projections.items():
                     if proj_name.endswith(f"_to_{name.lower()}"):
-                        weights.append(proj.synapse.weight.data)
+                        synapse: Any = getattr(proj, "synapse")
+                        if hasattr(synapse, "weight"):
+                            weights.append(synapse.weight.data)
 
                 w_mean = 0.0
                 w_std = 0.0
@@ -217,11 +224,17 @@ class VisualCortex(nn.Module):
                     w_mean = w_curr.mean().item()
                     w_std = w_curr.std().item()
 
+                firing_rate = 0.0
+                spikes = self.substrate.prev_spikes.get(name)
+                if spikes is not None:
+                    firing_rate = spikes.float().mean().item()
+
                 layer_state = {
                     # Record mean membrane potential
-                    "mean_mem": group.mem.mean().item() if hasattr(group, "mem") else 0.0,
+                    # type: ignore
+                    "mean_mem": cast(torch.Tensor, group.mem).mean().item() if hasattr(group, "mem") else 0.0,
                     # Record firing rate of last step
-                    "firing_rate": self.substrate.prev_spikes[name].float().mean().item() if name in self.substrate.prev_spikes else 0.0,
+                    "firing_rate": firing_rate,
                     # Weight stability
                     "weight_mean": w_mean,
                     "weight_std": w_std
@@ -233,3 +246,11 @@ class VisualCortex(nn.Module):
     def reset_state(self):
         """Reset internal state (membrane potentials, etc.)"""
         self.substrate.reset_state()
+
+    def get_total_spikes(self) -> int:
+        """Return total number of spikes in the last step."""
+        total = 0
+        for spikes in self.substrate.prev_spikes.values():
+            if spikes is not None:
+                total += int(spikes.sum().item())
+        return total

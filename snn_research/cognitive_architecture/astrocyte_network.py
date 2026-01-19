@@ -46,6 +46,10 @@ class AstrocyteNetwork(nn.Module):
     def energy(self, value: float):
         self.current_energy = value
 
+    def get_energy_level(self) -> float:
+        """Return current energy level."""
+        return self.current_energy
+
     def request_resource(self, source: str, amount: float) -> bool:
         """Legacy method for resource request compatibility."""
         if self.current_energy > amount:
@@ -65,8 +69,9 @@ class AstrocyteNetwork(nn.Module):
         """Legacy method stub for test_neuron_death."""
         if hasattr(layer, 'weight'):
             with torch.no_grad():
-                mask = torch.rand_like(layer.weight) > death_rate
-                layer.weight.mul_(mask.float())
+                mask = torch.rand_like(
+                    layer.weight) > death_rate  # type: ignore
+                layer.weight.mul_(mask.float())  # type: ignore
             self.current_energy -= 10.0  # Repair cost
 
     def monitor_neural_activity(self, firing_rate: float):
@@ -90,6 +95,10 @@ class AstrocyteNetwork(nn.Module):
         """疲労物質の除去（睡眠による）"""
         self.fatigue -= amount
         self.fatigue = max(0.0, self.fatigue)
+
+    def log_fatigue(self, amount: float):
+        """疲労物質の直接蓄積（Guardrail等からの強制介入用）"""
+        self.fatigue += amount
 
     def step(self):
         """自然回復などの毎ステップ処理"""

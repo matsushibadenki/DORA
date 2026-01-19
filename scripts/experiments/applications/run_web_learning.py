@@ -65,7 +65,7 @@ def extract_next_topics(data_path: str, current_topic: str) -> List[str]:
 
 def setup_distillation_manager(container: TrainingContainer) -> KnowledgeDistillationManager:
     """DIコンテナから学習マネージャを構築して返すヘルパー関数"""
-    device: str = container.device()
+    device = container.device()  # type: ignore
     student_model: torch.nn.Module = container.snn_model()
     optimizer: torch.optim.Optimizer = container.optimizer(
         params=student_model.parameters())
@@ -92,7 +92,7 @@ def setup_distillation_manager(container: TrainingContainer) -> KnowledgeDistill
         teacher_model_name=container.config.training.gradient_based.distillation.teacher_model(),
         tokenizer_name=container.config.data.tokenizer_name(),
         model_registry=container.model_registry(),
-        device=device,
+        device=str(device),
         config=manager_config
     )
     return distillation_manager

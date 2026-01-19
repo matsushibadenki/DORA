@@ -36,6 +36,7 @@ class LIFNeuron(nn.Module):
 
         # State (mem: Membrane Potential)
         # register_buffer ensures it's part of state_dict but not a learnable parameter
+        self.mem: torch.Tensor
         self.register_buffer("mem", torch.zeros(1, features))
         self.is_stateful = False
 

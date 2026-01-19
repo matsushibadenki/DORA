@@ -88,7 +88,10 @@ class ExplainabilityEngine:
         conscious_content = self.workspace.get_current_content()
 
         report = "Introspection Report:\n"
-        report += f"Current Focus: {conscious_content.get('type', 'None')}\n"
+        if isinstance(conscious_content, dict):
+            report += f"Current Focus: {conscious_content.get('type', 'None')}\n"
+        else:
+            report += f"Current Focus: {conscious_content}\n"
 
         return report
 

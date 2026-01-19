@@ -86,7 +86,7 @@ class SpikingWorldModel(BaseModel):
         sensory_inputs: Dict[str, torch.Tensor],
         actions: torch.Tensor,  # (B, T_seq, ActionDim)
         h_prev: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], Optional[torch.Tensor]]:
         """
         Args:
             sensory_inputs: 現在の観測 (各モダリティ)

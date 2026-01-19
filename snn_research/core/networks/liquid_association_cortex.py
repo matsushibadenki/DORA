@@ -147,12 +147,13 @@ class LiquidAssociationCortex(nn.Module):
         dw, _ = self.learning_rule.update(
             pre_spikes=pre_spikes,
             post_spikes=post_spikes,
-            weights=self.recurrent_weights.weight
+            current_weights=self.recurrent_weights.weight
         )
 
-        with torch.no_grad():
-            self.recurrent_weights.weight += dw
-            self.recurrent_weights.weight.clamp_(-1.0, 1.0)
+        if dw is not None:
+            with torch.no_grad():
+                self.recurrent_weights.weight += dw
+                self.recurrent_weights.weight.clamp_(-1.0, 1.0)
 
     def reset_state(self) -> None:
         self.mem = None

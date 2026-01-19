@@ -7,8 +7,10 @@
 import json
 import logging
 import os
+import os
 import time
 import random
+import asyncio
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -94,6 +96,7 @@ class NeuromorphicOS(nn.Module):
         self.base_dopamine = 0.1
         self.feedback_signal: Optional[torch.Tensor] = None
         self.system_status = "BOOTING"
+        self.is_running = False
         self.cycle_count = 0
 
         # Observer
@@ -152,6 +155,7 @@ class NeuromorphicOS(nn.Module):
         self.astrocyte.clear_fatigue(1000.0)
         self.cycle_count = 0
         self.system_status = "RUNNING"
+        self.is_running = True
         logger.info("🚀 Neuromorphic OS Kernel started.")
 
     # --- 修正: 削除されていたrewardメソッドを復元 ---
@@ -253,7 +257,7 @@ class NeuromorphicOS(nn.Module):
         count = 0
         for p in self.substrate.parameters():
             if p.dim() > 1:
-                count += (p.abs() > 1e-6).sum().item()
+                count += int((p.abs() > 1e-6).sum().item())
         return count
 
     def _pack_observation(self, phase, learning_phase, state, conscious_lvl, logs):
@@ -332,3 +336,24 @@ class NeuromorphicOS(nn.Module):
     # Compatibility alias for torch.nn.Module / Trainers
     def forward(self, x: torch.Tensor, phase: str = "wake", **kwargs: Any) -> Dict[str, Any]:
         return self.run_cycle(x, phase)
+
+    # --- Omega Point System Support ---
+    is_running: bool = False
+
+    async def sys_sleep(self, duration: float = 1.0):
+        """
+        System-wide sleep cycle trigger (Async).
+        Typically triggered by high fatigue or Omega Point controller.
+        """
+        logger.info(f"💤 SYS_SLEEP triggered for {duration}s...")
+        self.system_status = "SLEEPING"
+
+        # Simulate sleep cycles
+        cycles = int(duration * 10)  # 10 cycles per second assumption
+        for i in range(cycles):
+            self.run_cycle(torch.zeros(self.config.get(
+                "input_dim", 784)), phase="sleep")
+            await asyncio.sleep(0.1)  # Async yield
+
+        self.system_status = "RUNNING"
+        logger.info("☀️ SYS_SLEEP complete. Waking up.")

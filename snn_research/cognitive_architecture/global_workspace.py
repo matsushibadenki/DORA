@@ -20,12 +20,22 @@ class GlobalWorkspace(nn.Module):
 
         # Current conscious content (The "Thought")
         # register_buffer ensures it moves with .to(device)
+        self.current_content: torch.Tensor
         self.register_buffer("current_content", torch.zeros(1, dim))
         self.current_source: str = "None"
         self.current_salience: float = 0.0
 
         # Logs
         self.history: List[Dict[str, Any]] = []
+        self.subscribers: List[Any] = []
+
+    def subscribe(self, callback: Any):
+        """Register a callback for conscious broadcasts."""
+        self.subscribers.append(callback)
+
+    def get_current_content(self) -> torch.Tensor:
+        """Alias for get_current_thought."""
+        return self.current_content
 
     def publish(self, content: Any):
         """Test compatibility method."""
@@ -44,7 +54,19 @@ class GlobalWorkspace(nn.Module):
         self._update_content(tensor_content)
         self.current_salience = 1.0  # High salience for direct publish
 
-    def upload_to_workspace(self, source_name: str, content: Dict[str, torch.Tensor], salience: float):
+    def upload_to_workspace(self, source_name: str, content: Dict[str, Any], salience: float, **kwargs: Any):
+        """
+        各モジュールが情報をワークスペースに提示する。
+        Args:
+             source_name: モジュール名 (source kwarg対応)
+             content: データ辞書 (data kwarg対応)
+             salience: 顕著性
+        """
+        # Compatibility with calls using 'source' and 'data' kwargs
+        if 'source' in kwargs:
+            source_name = kwargs['source']
+        if 'data' in kwargs:
+            content = kwargs['data']
         """
         各モジュールが情報をワークスペースに提示する。
         """

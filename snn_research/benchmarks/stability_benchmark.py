@@ -11,7 +11,7 @@ import numpy as np
 import os
 import argparse
 import random
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression  # type: ignore
 import sys
 
 # Add project root to path

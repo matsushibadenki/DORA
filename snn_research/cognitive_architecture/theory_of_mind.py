@@ -86,9 +86,10 @@ class TheoryOfMind:
             f"🤔 Inferred intent of {agent_id} for action '{action}': {intent}")
 
         # 意図をワークスペースに投稿
+        # 意図をワークスペースに投稿
         self.workspace.upload_to_workspace(
-            source="theory_of_mind",
-            data={
+            source_name="theory_of_mind",
+            content={
                 "type": "intent_inference",
                 "target_agent": agent_id,
                 "action": action,

@@ -28,8 +28,8 @@ try:
     from snn_research.agent.reinforcement_learner_agent import ReinforcementLearnerAgent
     from snn_research.rl_env.grid_world import GridWorldEnv
 except ImportError:
-    ReinforcementLearnerAgent = Any
-    GridWorldEnv = Any
+    ReinforcementLearnerAgent = Any  # type: ignore
+    GridWorldEnv = Any  # type: ignore
 
 # Trainers
 try:
@@ -39,10 +39,10 @@ try:
     from snn_research.training.bio_trainer import BioRLTrainer
 except ImportError:
     # 防止策: テスト実行時にインポートエラーが出てもコンテナ定義自体は落ちないようにする
-    BreakthroughTrainer = Any
-    PhysicsInformedTrainer = Any
-    ParticleFilterTrainer = Any
-    BioRLTrainer = Any
+    BreakthroughTrainer = Any  # type: ignore
+    PhysicsInformedTrainer = Any  # type: ignore
+    ParticleFilterTrainer = Any  # type: ignore
+    BioRLTrainer = Any  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -231,3 +231,7 @@ class TrainingContainer(AppContainer):
         config=AppContainer.config,
         device=AppContainer.device  # Use resolved device object, not "auto" string
     )
+
+
+# --- Legacy / Missing Container Mock ---
+AgentContainer = Any  # type: ignore

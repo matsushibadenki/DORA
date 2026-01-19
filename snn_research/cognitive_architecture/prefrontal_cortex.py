@@ -209,14 +209,13 @@ class PrefrontalCortex:
             # ワークスペースへ新しいゴールを提示
             if hasattr(self.workspace, 'upload_to_workspace'):
                 self.workspace.upload_to_workspace(
-                    source="prefrontal_cortex",
-                    data={
-                        "type": "goal_setting",
-                        "goal": self.current_goal,
-                        "reason": safe_reason,
-                        "context": self.current_context,
-                        "vector_state": pfc_state_vector,  # ベクトル情報も共有可能に
-                        "uncertainty": self.current_uncertainty_level
+                    source_name="prefrontal_cortex",
+                    content={
+                        # Must be tensor in dict
+                        "features": pfc_state_vector.unsqueeze(0),
+                        "type": torch.tensor([1.0]),  # Dummy type marker
+                        # Extra metadata might be ignored by update_content but OK passed
+                        "goal_text": new_goal_text
                     },
                     salience=salience
                 )
