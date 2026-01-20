@@ -105,11 +105,9 @@ def run_single_trial(trial_id, args, device, train_loader, test_loader):
         "input_dim": 784,
         "hidden_dim": 1500,
         "num_layers": 2,
-        # Tuned for Learning: Higher LR, Lower Threshold
-        "learning_rate": 0.05,  # Increased from 0.002
-        # Lower threshold to encourage activity 2.0 is standard for FF
-        "ff_threshold": 2.0,    # Decreased from 5.0
-        "tau_mem": 20.0,        # Fixed for stability (dt=1.0)
+        "learning_rate": 0.05,
+        "ff_threshold": 50.0,   # CHANGED: 2.0 -> 50.0 (Sum scale)
+        "tau_mem": 20.0,
         "threshold": 1.0,
         "dt": 1.0,
         "time_steps": args.time_steps,
