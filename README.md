@@ -103,7 +103,7 @@ python -m app.main & python -m app.dashboard
 現在、最も安定して動作する視覚野モジュール(Forward-Forward学習)のデモです。
 
 ```bash
-python scripts/demos/visual/run_spiking_ff_demo.py
+python scripts/demos/visual/run_spiking_ff_demo_v2.py
 ```
 
 ### **3. Stability Benchmark (New)**

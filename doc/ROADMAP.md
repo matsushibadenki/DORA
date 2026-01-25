@@ -44,10 +44,10 @@
 
 ### 1. Universal Neuron Substrate & Stability (最優先)
 
-- [ ] **Neuron / Synapse / Spike を最小単位として再定義**
-- [ ] 膜電位・閾値・回復変数・スパイク履歴の**標準状態モデル化**
-- [ ] 時間ステップではなく **イベント駆動更新**を原則とする
-- [ ] 行列・バッチ前提APIの完全排除
+- [x] **Neuron / Synapse / Spike を最小単位として再定義**
+- [x] 膜電位・閾値・回復変数・スパイク履歴の**標準状態モデル化**
+- [x] 時間ステップではなく **イベント駆動更新**を原則とする
+- [x] 行列・バッチ前提APIの完全排除
 - [ ] **Learning Stability Benchmark**
   - [ ] Target: > 95% Accuracy consistency across runs
   - [ ] Standardized `VisualCortex` model implementation
@@ -56,15 +56,15 @@
 
 ### 2. PlasticityRule Interface（中核API）
 
-- [ ] `PlasticityRule.update(pre_spike, post_spike, local_state)`
-- [ ] **誤差・勾配・global loss を引数に取らない**
-- [ ] 学習則は「観測できる副作用」として実装
+- [x] `PlasticityRule.update(pre_spike, post_spike, local_state)`
+- [x] **誤差・勾配・global loss を引数に取らない**
+- [x] 学習則は「観測できる副作用」として実装
 
 対応ルール：
 
 - [x] Forward-Forward（局所正負フェーズ）
-- [ ] STDP / R-STDP
-- [ ] Active Inference（予測誤差＝内部状態差分）
+- [x] STDP / R-STDP
+- [x] Active Inference（予測誤差＝内部状態差分）
 
 ---
 
@@ -89,7 +89,7 @@
 
 ### 1. 異種混合ネットワーク（必須）
 
-- [ ] **V1（感覚野）**
+- [x] **V1（感覚野）**
   - Forward-Forward
   - 高頻度入力・高速適応
 
