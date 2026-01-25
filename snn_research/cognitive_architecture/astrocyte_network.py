@@ -1,9 +1,8 @@
 # ファイルパス: snn_research/cognitive_architecture/astrocyte_network.py
-# 日本語タイトル: Astrocyte & Energy Management System
+# 日本語タイトル: Astrocyte & Energy Management System (Fixed)
 # 目的・内容:
 #   神経活動によるエネルギー消費と、疲労の蓄積をシミュレートする。
-#   エネルギー不足は活動抑制や強制睡眠（Shutdown）を引き起こす。
-#   メタ認知スケジューラへの主要な入力となる。
+#   Schedulerからの直接消費(consume_energy)に対応。
 
 import torch
 import torch.nn as nn
@@ -50,6 +49,14 @@ class AstrocyteNetwork(nn.Module):
         """Return current energy level."""
         return self.current_energy
 
+    def consume_energy(self, amount: float):
+        """
+        [OS API] 指定された量のエネルギーを消費し、疲労を蓄積する。
+        Schedulerから呼び出される。
+        """
+        self.current_energy = max(0.0, self.current_energy - amount)
+        self.fatigue += amount * 0.1  # 疲労も溜まる
+
     def request_resource(self, source: str, amount: float) -> bool:
         """Legacy method for resource request compatibility."""
         if self.current_energy > amount:
@@ -59,7 +66,6 @@ class AstrocyteNetwork(nn.Module):
 
     def maintain_homeostasis(self, model: nn.Module, learning_rate: float):
         """Legacy method stub for test_homeostasis_scaling."""
-        # Simple implementation: scale weights if glutamate is high
         if self.modulators.get("glutamate", 0.0) > 0.8:
             with torch.no_grad():
                 for param in model.parameters():
@@ -110,6 +116,7 @@ class AstrocyteNetwork(nn.Module):
             "status": "CRITICAL" if self.current_energy < 100 else "NORMAL",
             "metrics": {
                 "energy": self.current_energy,
+                "current_energy": self.current_energy,  # For compatibility
                 "fatigue": self.fatigue,
                 "max_energy": self.max_energy,
                 "fatigue_threshold": self.fatigue_threshold

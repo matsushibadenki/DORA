@@ -69,6 +69,7 @@ dependencies = [
     "tqdm",
     "plotly",
     "sentence-transformers",
+    "streamlit",
 ]
 
 [project.urls]
