@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/visual_cortex_v2.py
 # 日本語タイトル: visual_cortex_v2
-# 目的: 線形誤差更新による学習の加速とマージン拡大 (Rev32)
+# 目的: LayerNorm撤廃とk-WTAによるスパース分散表現の獲得 (Rev36)
 
 import torch
 import torch.nn as nn
@@ -15,13 +15,14 @@ logger = logging.getLogger(__name__)
 
 class VisualCortexV2(nn.Module):
     """
-    Visual Cortex V2 - Phase 2 Rev32 (Linear Drive)
+    Visual Cortex V2 - Phase 2 Rev36 (Sparse Competitive Coding)
     
     修正内容:
-    - 誤差計算を Sigmoid から Linear (ReLU) に変更。
-      -> 閾値から離れていても学習が止まらないようにする（勾配消失の防止）。
-    - 閾値を 150.0 -> 600.0 に引き上げ、現在の活動レベルに合わせる。
-    - Vector Length を 30.0 -> 50.0 に拡大し、分離の余地を作る。
+    - LayerNormを撤廃し、k-WTA (k-Winners-Take-All) を復活。
+      -> 正規化ではなく「競合」によって活動レベルを制御する。
+      -> ラベル入力が「誰が勝つか」に直接影響を与えるため、特徴分離が強力になる。
+    - 入力は画像とラベルを結合(Concat)して使用。
+    - 学習則は閾値ベースの線形更新を維持。
     """
 
     def __init__(self, device: torch.device, config: Optional[Dict[str, Any]] = None):
@@ -36,19 +37,20 @@ class VisualCortexV2(nn.Module):
         self.config.setdefault("dt", 1.0)
         self.config.setdefault("tau_mem", 20.0)
         
-        self.learning_rate = self.config.get("learning_rate", 0.05) # 少し下げる（Linearは値が大きくなりやすいため）
+        self.learning_rate = self.config.get("learning_rate", 0.05)
         
-        # Vector Length: 50.0 -> Max Energy = 2500
-        # 期待される平均活動 ~ 1250
-        self.vector_length = 50.0
-        
-        # 閾値を中央付近に設定
-        self.ff_threshold = self.config.get("ff_threshold", 600.0) 
-        self.sparsity = 0.5 
+        # k-WTA設定
+        # 2000ニューロンのうち上位5%(100個)が発火すると想定
+        # 活動値の平均が1.0なら Goodness = 1.0^2 * 100 = 100
+        # 活動値が強い(例: 5.0)なら Goodness = 25 * 100 = 2500
+        # 閾値を 800.0 に設定 (平均活動強度 ~2.8 を要求)
+        self.sparsity = 0.05 
+        self.ff_threshold = self.config.get("ff_threshold", 800.0) 
 
         self.substrate = SpikingNeuralSubstrate(self.config, self.device)
         self.layer_names = [f"V{i+1}" for i in range(self.num_layers)]
         
+        # ラベル専用層は不要（入力統合のため）
         self._build_architecture()
         
         self.activity_history: Dict[str, float] = {name: 0.0 for name in self.layer_names}
@@ -64,7 +66,7 @@ class VisualCortexV2(nn.Module):
             ff_rule = ForwardForwardRule(
                 learning_rate=self.learning_rate,
                 threshold=self.ff_threshold,
-                w_decay=0.01 
+                w_decay=0.02 # k-WTA環境下では重みが大きくなりがちなので減衰を少し強める
             )
 
             projection_name = f"{prev_layer.lower()}_to_{layer_name.lower()}"
@@ -77,15 +79,17 @@ class VisualCortexV2(nn.Module):
                 synapse = cast(nn.Module, proj.synapse)
                 if hasattr(synapse, 'weight'):
                     w = cast(torch.Tensor, synapse.weight)
-                    nn.init.orthogonal_(w, gain=1.0)
+                    # k-WTAでは初期発火が必要なので、少し強めに初期化
+                    nn.init.orthogonal_(w, gain=1.5)
             
             prev_layer = layer_name
 
     def forward(self, x: torch.Tensor, phase: str = "wake") -> Dict[str, torch.Tensor]:
         x = x.to(self.device).float()
         
-        # 入力正規化
-        x_norm = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8) * self.vector_length
+        # 入力正規化: ベクトル長を固定するのではなく、適切なスケールに収める
+        # 画像平均ノルム~9.0 -> 15.0程度にスケールアップ
+        x_norm = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8) * 15.0
         
         inputs = {"Retina": x_norm}
         
@@ -102,7 +106,8 @@ class VisualCortexV2(nn.Module):
         batch_size = x.size(0)
         if inject_noise:
             for name in self.layer_names:
-                noise = torch.randn(batch_size, self.hidden_dim, device=self.device) * 0.5
+                # k-WTAのデッドロック防止のため、ノイズは重要
+                noise = torch.randn(batch_size, self.hidden_dim, device=self.device) * 0.2
                 if name not in inputs:
                     inputs[name] = noise
                 else:
@@ -127,11 +132,23 @@ class VisualCortexV2(nn.Module):
                 weight = synapse.weight
                 mem = F.linear(current_input, weight)
                 
-                # L2 Normalization
-                norm = mem.norm(p=2, dim=1, keepdim=True) + 1e-8
-                mem_normalized = mem / norm * self.vector_length
+                # 【重要】k-WTA (k-Winners-Take-All)
+                # 上位k個のニューロンのみを通す
+                # これにより、活動の総量が制限され（爆発防止）、
+                # かつニューロン間の競合により専門化（特徴抽出）が促進される
+                k = int(self.hidden_dim * self.sparsity)
+                if k > 0:
+                    # topkを取得
+                    topk_values, _ = torch.topk(mem, k, dim=1)
+                    # k番目の値を閾値とする
+                    threshold = topk_values[:, -1].unsqueeze(1)
+                    # 閾値以上のものだけマスクを作成（バイナリマスクではない、値は保持）
+                    # ReLUも兼ねて、正の値のみを通す（閾値が負の場合もあるため）
+                    mask = (mem >= threshold).float()
+                    activity = torch.relu(mem * mask)
+                else:
+                    activity = torch.relu(mem)
                 
-                activity = torch.relu(mem_normalized)
                 self.layer_traces[layer_name] = 0.6 * self.layer_traces[layer_name] + 0.4 * activity
                 
                 current_input = activity.detach() 
@@ -154,31 +171,13 @@ class VisualCortexV2(nn.Module):
                     v_activity = self.layer_traces[layer_name]
                     goodness = v_activity.pow(2).sum(dim=1, keepdim=True)
                     
-                    # 【重要修正】Linear Error Calculation
-                    # Sigmoidによる飽和を防ぎ、常に強い勾配を与える
+                    # 線形更新則 (Rev32を踏襲)
+                    # 閾値 800 に対して、Posは上げ、Negは下げる
                     if learning_phase == "positive":
-                        # Posは閾値より大きくしたい。不足分(Threshold - Goodness)をエラーとする。
-                        # 上限を設けないと不安定になるので、適度にクリップするか、ReLUを使う
-                        # Goodness > Threshold の場合も、さらに大きくしてマージンを稼ぐ（過学習リスクはあるが分離優先）
-                        raw_error = self.ff_threshold - goodness
-                        
-                        # 閾値以下なら強くプラス、閾値以上でも少しプラス（マージン確保）
-                        # ここではシンプルに閾値との差分を使う
-                        scale = raw_error # 正なら上げろ、負なら下げろ（いやPosは常に上げたい）
-                        
-                        # Hinton方式: log(1 + exp(...)) の微分は sigmoid。
-                        # ここでは、Posをとにかく「上げる」方向に一定の力をかける
-                        # ただし、Goodnessが極端に大きい場合は抑える
-                        scale = 1.0 # 常に上げる
-                        
-                        # もっとスマートな方法:
-                        # 閾値を超えていない分だけ強く押す
-                        scale = torch.relu(self.ff_threshold + 200.0 - goodness) / 100.0
+                        scale = torch.sigmoid(self.ff_threshold - goodness)
                         direction = 1.0
                     else:
-                        # Negは閾値より小さくしたい。超過分(Goodness - Threshold)をエラーとする。
-                        # 下限なしで押し下げる
-                        scale = torch.relu(goodness - (self.ff_threshold - 200.0)) / 100.0
+                        scale = torch.sigmoid(goodness - self.ff_threshold)
                         direction = -1.0
                     
                     mean_scale = scale.mean()
@@ -191,13 +190,15 @@ class VisualCortexV2(nn.Module):
                     delta_w = (v_activity.t() @ x_in) / batch_size
                     
                     lr = self.learning_rate
-                    # scaleが0になることもあるので、微小なベース学習率を持たせるかどうか
-                    # ここではscaleに依存させる
-                    
                     synapse.weight.add_(delta_w * direction * mean_scale * lr)
                     
-                    w_norm = synapse.weight.norm(dim=1, keepdim=True) + 1e-8
-                    synapse.weight.div_(w_norm).mul_(torch.clamp(w_norm, max=2.0))
+                    # k-WTAでは少数のニューロンに重みが集中しやすいため、
+                    # 個別の重みベクトルの長さを正規化するのが有効
+                    # 行ごと（ニューロンごと）に正規化
+                    # w_norm = synapse.weight.norm(dim=1, keepdim=True) + 1e-8
+                    # synapse.weight.div_(w_norm).mul_(torch.clamp(w_norm, max=3.0))
+                    # 全体のクリッピングに変更
+                    torch.nn.utils.clip_grad_norm_(synapse.parameters(), 1.0)
                     
                     current_input = v_activity
 

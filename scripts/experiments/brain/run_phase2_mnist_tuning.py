@@ -1,6 +1,6 @@
 # ファイルパス: scripts/experiments/brain/run_phase2_mnist_tuning.py
 # 日本語タイトル: run_phase2_mnist_tuning
-# 目的: Linear Drive版の実行
+# 目的: k-WTA版の実行 (Rev36)
 
 import sys
 import os
@@ -17,7 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from snn_research.models.visual_cortex_v2 import VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("Phase2_MNIST_Rev32")
+logger = logging.getLogger("Phase2_MNIST_Rev36")
 
 class MNISTOverlayProcessor:
     def __init__(self, device):
@@ -34,8 +34,8 @@ class MNISTOverlayProcessor:
         else:
             labels = labels.to(self.device)
             one_hot = F.one_hot(labels, num_classes=10).float()
-            # ラベル強度 9.0 (維持)
-            combined = torch.cat([x, one_hot * 9.0], dim=1)
+            # ラベル強度 5.0
+            combined = torch.cat([x, one_hot * 5.0], dim=1)
             
         return combined
 
@@ -70,6 +70,7 @@ def evaluate(brain, test_loader, processor, device):
                 x_in = processor.overlay_label(data, torch.tensor([lbl], device=device))
                 brain(x_in, phase="inference")
                 stats = brain.get_goodness()
+                # 全層Goodness合計
                 raw = stats.get("V1_goodness", 0) + stats.get("V2_goodness", 0) + stats.get("V3_goodness", 0)
                 scores.append(raw)
             
@@ -86,7 +87,7 @@ def evaluate(brain, test_loader, processor, device):
     return 100.0 * correct / total
 
 def run_tuning():
-    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev32: Linear Drive)")
+    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev36: Sparse Competitive)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     config = {
@@ -94,8 +95,8 @@ def run_tuning():
         "hidden_dim": 2000,
         "num_layers": 3,
         "learning_rate": 0.05,
-        "ff_threshold": 600.0, # Raised
-        "w_decay": 0.01 
+        "ff_threshold": 800.0, 
+        "w_decay": 0.02 
     }
     
     brain = VisualCortexV2(device, config).to(device)
