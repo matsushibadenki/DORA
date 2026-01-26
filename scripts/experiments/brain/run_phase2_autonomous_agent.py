@@ -1,89 +1,166 @@
 # ファイルパス: scripts/experiments/brain/run_phase2_autonomous_agent.py
-# Title: Phase 2 Autonomous Agent Experiment
-# 修正内容: Mypyエラー修正 (型ヒントの追加)。
-
-import torch
-import logging
-import sys
 import os
 import time
-from typing import Dict, Any, List
+import yaml
+import torch
+import logging
+import numpy as np
+from pathlib import Path
+from typing import Dict, List, Any, Union, Type, cast
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
+from snn_research.utils.config_loader import load_config
 
-from snn_research.core.snn_core import SNNCore
-from snn_research.adaptive.active_inference_agent import ActiveInferenceAgent
-from snn_research.adaptive.intrinsic_motivator import IntrinsicMotivator
+# Mypy対策: 条件付きインポートの型定義
+try:
+    from omegaconf import DictConfig, OmegaConf
+except ImportError:
+    # 開発環境でomegaconfがない場合のフォールバック定義
+    DictConfig = dict  # type: ignore
+    OmegaConf = None   # type: ignore
 
-# ロガー設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("Phase2Agent")
 
 class Phase2AutonomousAgent:
-    """Phase 2: 自律学習エージェント"""
-    def __init__(self):
-        self.device = "cpu"
-        self.input_dim = 64
-        self.hidden_dim = 128
-        self.output_dim = 10
+    def __init__(self, config_path: str):
+        # Configロード
+        raw_config = load_config(config_path)
         
-        # コア脳 (SNN)
-        self.brain = SNNCore(
-            in_features=self.input_dim,
-            hidden_features=self.hidden_dim,
-            out_features=self.output_dim
-        ).to(self.device)
+        # DictConfig -> Dict 変換
+        self.config: Dict[str, Any] = {}
         
-        # 能動的推論モジュール
-        self.active_inference = ActiveInferenceAgent(
-            state_dim=self.hidden_dim,
-            action_dim=self.output_dim
-        )
-        
-        # 内発的動機づけ
-        self.motivator = IntrinsicMotivator()
-        
-        # 知識ベース
-        # [Mypy Fix] 型ヒントを追加
-        self.knowledge_base: List[Dict[str, Any]] = [] 
-        
-        logger.info("🧠 Autonomous Agent initialized.")
+        if OmegaConf is not None and isinstance(raw_config, DictConfig):
+            # OmegaConfが利用可能な場合
+            container = OmegaConf.to_container(raw_config, resolve=True)
+            if isinstance(container, dict):
+                # Mypy修正: 明示的なキャスト
+                self.config = cast(Dict[str, Any], container)
+        elif isinstance(raw_config, dict):
+            self.config = raw_config
+        else:
+            # 万が一の場合
+            self.config = {}
 
-    def run_life_cycle(self, steps: int = 100):
-        """ライフサイクルの実行"""
-        logger.info(f"Starting life cycle for {steps} steps...")
+        self.device = torch.device(str(self.config.get("device", "cpu")))
         
-        for t in range(steps):
-            # 1. 環境からの入力 (ダミー)
-            sensory_input = torch.randn(1, self.input_dim).to(self.device)
-            
-            # 2. 脳による処理 (知覚)
-            brain_state = self.brain(sensory_input)
-            
-            # 3. 能動的推論 (行動選択)
-            action = self.active_inference.select_action(brain_state)
-            
-            # 4. 内発的報酬の計算 (好奇心)
-            intrinsic_reward = self.motivator.calculate_reward(brain_state)
-            
-            # 5. 学習 (可塑性更新)
-            if intrinsic_reward > 0.5:
-                # 驚きが大きい場合、学習を強化
-                target = torch.randn(1, self.output_dim).to(self.device) # ダミー
-                self.brain.update_plasticity(sensory_input, target, learning_rate=0.05)
+        # 脳の初期化
+        self.brain = ArtificialBrain(self.config)
+        self.brain.to(self.device)
+        
+        # 実験パラメータ
+        self.steps = 0
+        self.max_steps = 1000 
+        
+        # 安全なアクセス
+        cognitive_conf = self.config.get('cognitive', {})
+        if isinstance(cognitive_conf, dict):
+            sleep_conf = cognitive_conf.get('sleep', {})
+            if isinstance(sleep_conf, dict):
+                self.sleep_interval = int(sleep_conf.get('cycle_interval', 100))
+            else:
+                self.sleep_interval = 100
+        else:
+            self.sleep_interval = 100
+        
+        # 型ヒント追加
+        self.stats: Dict[str, List[float]] = {"stability": [], "energy": []}
+
+    def run_life_cycle(self):
+        logger.info("Starting Phase 2 Autonomous Life Cycle...")
+        try:
+            while self.steps < self.max_steps:
+                self.steps += 1
+                if self.steps % self.sleep_interval == 0:
+                    self._run_sleep_cycle()
+                else:
+                    self._run_awake_cycle()
                 
-                # 知識の蓄積
-                self.knowledge_base.append({
-                    "step": t,
-                    "input_summary": sensory_input.mean().item(),
-                    "surprise": intrinsic_reward
-                })
+                if self.steps % 10 == 0:
+                    self._report_status()
+                    
+        except KeyboardInterrupt:
+            logger.info("Simulation stopped by user.")
+        finally:
+            self._save_results()
+
+    def _get_sensory_input(self) -> torch.Tensor:
+        # 安全なアクセス
+        model_conf = self.config.get('model', {})
+        input_size = 64
+        if isinstance(model_conf, dict):
+            net_conf = model_conf.get('network', {})
+            if isinstance(net_conf, dict):
+                sizes = net_conf.get('layer_sizes', [64])
+                if isinstance(sizes, list) and len(sizes) > 0:
+                    input_size = sizes[0]
+        
+        prob = 0.2
+        input_data = (torch.rand(1, input_size) < prob).float().to(self.device)
+        return input_data
+
+    def _run_awake_cycle(self):
+        if not self.brain.is_awake:
+            self.brain.wake_up()
+        
+        sensory_input = self._get_sensory_input()
+        output = self.brain(sensory_input) # forward呼び出し
+        
+        metrics = self.brain.get_metrics()
+        sparsity = metrics.get("sparsity_loss", 0.0)
+        self.stats["energy"].append(sparsity)
+        
+        if torch.isnan(output).any():
+            logger.error("Stability Collapse Detected: NaN values in output!")
             
-            if (t+1) % 20 == 0:
-                logger.info(f"Step {t+1}: Intrinsic Reward={intrinsic_reward:.4f}, Knowledge={len(self.knowledge_base)}")
-                
-        logger.info("✅ Life cycle completed successfully.")
+        active_neurons = (output > 0).float().sum().item()
+        total_neurons = output.numel()
+        firing_rate = active_neurons / (total_neurons + 1e-6)
+        
+        if firing_rate > 0.10: 
+            logger.warning(f"High Activity Warning: {firing_rate:.2%} active")
+
+    def _run_sleep_cycle(self):
+        self.brain.sleep()
+        
+        sleep_duration = 0.1
+        cognitive_conf = self.config.get('cognitive', {})
+        if isinstance(cognitive_conf, dict):
+            sleep_conf = cognitive_conf.get('sleep', {})
+            if isinstance(sleep_conf, dict):
+                sleep_duration = float(sleep_conf.get('min_sleep_duration', 0.1))
+        
+        logger.info(f"Sleeping for {sleep_duration} virtual seconds...")
+        time.sleep(0.1) 
+        self.brain.wake_up()
+
+    def _report_status(self):
+        if self.stats["energy"]:
+            avg_energy = np.mean(self.stats["energy"][-10:])
+            logger.info(f"Step {self.steps}: Avg Energy(SparsityLoss)={avg_energy:.4f}")
+
+    def _save_results(self):
+        save_path = Path("workspace/runs/phase2_results.yaml")
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        final_energy = float(np.mean(self.stats["energy"])) if self.stats["energy"] else 0.0
+        
+        with open(save_path, 'w') as f:
+            yaml.dump({
+                "steps_completed": self.steps,
+                "final_energy_metric": final_energy,
+                "status": "Completed"
+            }, f)
+        logger.info(f"Results saved to {save_path}")
+
+def main():
+    config_path = "configs/experiments/brain_v14_config.yaml"
+    if not os.path.exists(config_path):
+        logger.error(f"Config file not found: {config_path}")
+        return
+
+    agent = Phase2AutonomousAgent(config_path)
+    agent.run_life_cycle()
 
 if __name__ == "__main__":
-    agent = Phase2AutonomousAgent()
-    agent.run_life_cycle()
+    main()

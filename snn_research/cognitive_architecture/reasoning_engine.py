@@ -1,10 +1,7 @@
 # ファイルパス: snn_research/cognitive_architecture/reasoning_engine.py
-# 日本語タイトル: Reasoning Engine v2.7 - Type Fixes
-# 目的: Mypyエラー ("Tensor" not callable) の修正と型安全性の向上。
-
 import torch
 import torch.nn as nn
-from typing import List, Dict, Any, Optional, cast, Tuple
+from typing import List, Dict, Any, Optional, cast, Tuple, Union
 import logging
 import re
 import io
@@ -87,8 +84,8 @@ class ReasoningEngine:
         max_retries: int = 2,
         device: str = 'cpu'
     ):
-        self.model = generative_model
-        # 明示的に型を指定
+        # Mypy対策: 型を明示
+        self.model: SFormer = generative_model
         self.astrocyte: AstrocyteNetwork = astrocyte
         self.tokenizer = tokenizer
         self.rag_system = rag_system
@@ -161,8 +158,6 @@ class ReasoningEngine:
         force_system2 = any(w in input_text for w in ["calculate", "code", "python", "計算", "書いて", "足し算"])
 
         estimated_cost = float(self.num_thinking_paths * self.max_thinking_steps * 0.2)
-        
-        # [Fix] 明示的なメソッド呼び出しと型チェック
         has_energy = self.astrocyte.request_resource("prefrontal_cortex", estimated_cost)
 
         if not force_system2 and not has_energy:
@@ -171,7 +166,7 @@ class ReasoningEngine:
         logger.info(f"🤔 System 2 Activated (Force: {force_system2})")
 
         candidates = []
-        gen_model = cast(Any, self.model)
+        gen_model = self.model
 
         for path_idx in range(self.num_thinking_paths):
             current_input_ids = input_ids.clone()
@@ -238,8 +233,9 @@ class ReasoningEngine:
         }
 
     def _generate_with_rag(
-        self, model: Any, input_ids: torch.Tensor, tokenizer: Any, temperature: float
+        self, model: SFormer, input_ids: torch.Tensor, tokenizer: Any, temperature: float
     ) -> Tuple[torch.Tensor, List[str], str]:
+        # model型をSFormerに固定
         current_ids = input_ids.clone()
         rag_log: List[str] = []
 
@@ -248,7 +244,9 @@ class ReasoningEngine:
 
         for _ in range(2):
             with torch.no_grad():
-                output_ids = model.generate(
+                # Mypy対策: Anyにキャストして "Tensor" not callable エラーを回避
+                gen_model = cast(Any, model)
+                output_ids = gen_model.generate(
                     current_ids,
                     max_length=current_ids.shape[1] + self.max_thinking_steps,
                     temperature=temperature,
@@ -278,7 +276,9 @@ class ReasoningEngine:
         return current_ids, rag_log, full_text
 
     def _system1_inference(self, input_ids: torch.Tensor) -> Dict[str, Any]:
-        output = self.model.generate(
+        # Mypy対策: Anyにキャスト
+        gen_model = cast(Any, self.model)
+        output = gen_model.generate(
             input_ids,
             max_length=input_ids.shape[1] + 32,
             do_sample=True,
