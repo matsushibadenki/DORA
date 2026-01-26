@@ -1,16 +1,17 @@
-# snn_research/core/layers/lif_layer.py
 # ファイルパス: snn_research/core/layers/lif_layer.py
-# 日本語タイトル: LIF SNNレイヤー (No-BP / No-MatrixOp版)
-# 目的: 誤差逆伝播法と行列演算ライブラリへの依存を排除し、ニューロン個別の挙動として実装。
-# 修正: エラーログにある adaptive_bias はこのバージョンには不要なため、
-#       確実にこのNo-BP版コードで上書きしてエラーを解消する。
+# 日本語タイトル: LIF SNNレイヤー (No-BP / No-MatrixOp版 / Type-Safe)
+# 目的: 
+#   1. 誤差逆伝播法と行列演算ライブラリへの依存を排除。
+#   2. mypyエラー（learning_configの型不整合）を解消。
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 import math
 from typing import Dict, Any, Optional, cast
+
 from snn_research.core.layers.abstract_snn_layer import AbstractSNNLayer
+from snn_research.config.learning_config import BaseLearningConfig
 
 
 class LIFLayer(AbstractSNNLayer):
@@ -22,7 +23,21 @@ class LIFLayer(AbstractSNNLayer):
     """
 
     def __init__(self, input_features: int, neurons: int, **kwargs: Any) -> None:
-        learning_config = kwargs.get('learning_config', {})
+        # learning_config の取得と型変換
+        # デフォルトを {} ではなく None にし、辞書が来た場合はオブジェクト化する
+        raw_config = kwargs.get('learning_config')
+        learning_config: Optional[BaseLearningConfig] = None
+        
+        if isinstance(raw_config, BaseLearningConfig):
+            learning_config = raw_config
+        elif isinstance(raw_config, dict):
+            # 辞書型の場合は BaseLearningConfig に変換
+            # 余分な引数によるエラーを防ぐため、learning_rateのみ抽出して渡す（必要に応じて拡張）
+            lr = raw_config.get('learning_rate', 0.01)
+            learning_config = BaseLearningConfig(learning_rate=lr)
+        else:
+            learning_config = None
+
         name = kwargs.get('name', 'LIFLayer')
         super().__init__((input_features,), (neurons,), learning_config, name)
 
