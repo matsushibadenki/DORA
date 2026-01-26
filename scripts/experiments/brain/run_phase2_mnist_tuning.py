@@ -1,4 +1,7 @@
 # ファイルパス: scripts/experiments/brain/run_phase2_mnist_tuning.py
+# 日本語タイトル: run_phase2_mnist_tuning
+# 目的: 画像入力レベルの再調整 (1.5)
+
 import sys
 import os
 import time
@@ -14,7 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from snn_research.models.visual_cortex_v2 import VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("Phase2_MNIST_Rev10")
+logger = logging.getLogger("Phase2_MNIST_Rev29")
 
 class MNISTOverlayProcessor:
     def __init__(self, device):
@@ -22,9 +25,8 @@ class MNISTOverlayProcessor:
     
     def overlay_label(self, x: torch.Tensor, labels: Optional[torch.Tensor]) -> torch.Tensor:
         x = x.view(x.size(0), -1).to(self.device)
-        
-        # Image Gain: 10.0 (Weak Base)
-        x = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8) * 10.0
+        # V1にNormがないため、入力値を慎重に設定 (1.5)
+        x = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8) * 1.5
         
         batch_size = x.size(0)
         
@@ -33,10 +35,8 @@ class MNISTOverlayProcessor:
             return torch.cat([x, zeros], dim=1)
         else:
             labels = labels.to(self.device)
-            # --- Rev10: Massive Label Gain ---
-            # 100.0 vs 10.0 (Image)
-            # This ensures the label drives the k-WTA selection
-            one_hot = F.one_hot(labels, num_classes=10).float() * 100.0
+            # Label Gain (V1には効きにくいが、V2には効く)
+            one_hot = F.one_hot(labels, num_classes=10).float() * 4.0
             return torch.cat([x, one_hot], dim=1)
 
 def get_mnist_loaders(batch_size=64):
@@ -70,10 +70,7 @@ def evaluate(brain, test_loader, processor, device):
                 x_in = processor.overlay_label(data, torch.tensor([lbl], device=device))
                 brain(x_in, phase="inference")
                 stats = brain.get_goodness()
-                
-                # Raw Goodness
-                # Now that labels dominate input, a matched label should have high energy 
-                # (via learned weights), mismatched should have lower (via negative phase)
+                # ラベルの影響が強く出るV2/V3で判断
                 raw = stats.get("V2_goodness", 0) + stats.get("V3_goodness", 0)
                 scores.append(raw)
             
@@ -84,14 +81,14 @@ def evaluate(brain, test_loader, processor, device):
             total += 1
             
             if i < debug_limit:
-                # ログで変動を確認 (1000番台で変動があれば成功)
+                # これでスコアがバラつけば成功
                 logger.info(f"Sample {i}: True={target} Pred={pred} | Scores={np.round(scores, 1).tolist()}")
 
     logger.info(f"Prediction Distribution: {pred_counts}")
     return 100.0 * correct / total
 
 def run_tuning():
-    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev10: Label Dominance)")
+    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev29: Sensory Dominance)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     config = {
@@ -99,7 +96,7 @@ def run_tuning():
         "hidden_dim": 2000,
         "num_layers": 3,
         "learning_rate": 0.05,
-        "ff_threshold": 3000.0, 
+        "ff_threshold": 1500.0, 
         "w_decay": 0.01 
     }
     

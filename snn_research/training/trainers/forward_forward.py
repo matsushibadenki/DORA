@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/training/trainers/forward_forward.py
 # 日本語タイトル: forward_forward
-# 目的: Device不一致エラー修正（生成したレイヤーを明示的にto(device)する）
+# 目的: Goodness爆発対策（Running Thresholdの導入）と入力正規化の形状修正
 
 from snn_research.training.base_trainer import AbstractTrainer
 import torch
@@ -45,10 +45,12 @@ class SpikingLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         input_dims = x.dim()
+        # 入力が (B, D) の場合
         if not ((input_dims == 3) or (input_dims == 5)):
             out_static = self.layer(x)
             current = out_static.unsqueeze(1).repeat(
                 1, self.time_steps, *([1] * (out_static.dim() - 1)))
+        # 入力が (B, T, D) または (B, T, C, H, W) の場合
         else:
             B, T = x.shape[0], x.shape[1]
             x_flat = x.flatten(0, 1)
@@ -87,14 +89,38 @@ class SpikingForwardForwardLayer(nn.Module):
         self.optimizer = torch.optim.Adam(
             self.block.parameters(), lr=learning_rate)
 
-        # Bufferとして登録（モデル移動時に一緒に動くようにする）
+        # 動的閾値（初期値2.0）
         self.register_buffer("running_threshold", torch.tensor(2.0))
-        self.threshold_momentum = 0.01
+        self.threshold_momentum = 0.05
+        
+        # Conv層判定
+        self.is_conv = any(isinstance(m, nn.Conv2d) for m in forward_block.modules())
 
     def forward(self, x):
-        return self.block(x)
+        # 入力の正規化：SpikingLayerへの入力はノルムを1付近に保つ必要がある
+        if self.is_conv:
+            # (B, C, H, W) -> (B, 1, 1, 1) で正規化
+            dims = [1, 2, 3] if x.dim() == 4 else [1]
+            norm = x.norm(2, dim=dims, keepdim=True) + 1e-8
+            x_norm = x / norm
+        else:
+            if x.dim() > 2:
+                # (B, T, D) の場合、バッチごとに全時刻・全特徴量で正規化するか、
+                # 時刻ごとに正規化するかだが、ここではバッチごとのエネルギーを一定にする
+                B, T, D = x.shape
+                x_flat = x.reshape(B, -1) # (B, T*D)
+                norm = x_flat.norm(2, 1, keepdim=True) + 1e-8
+                # 正規化後に元の形状に戻す 【重要】
+                x_norm = (x_flat / norm).view(B, T, D)
+            else:
+                # (B, D)
+                norm = x.norm(2, 1, keepdim=True) + 1e-8
+                x_norm = x / norm
+        
+        return self.block(x_norm)
 
     def compute_goodness(self, hidden_spikes: torch.Tensor, hidden_v_mem: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # 電位の二乗平均をGoodnessとする
         if hidden_v_mem is not None:
             return hidden_v_mem.pow(2).mean(dim=1).mean(dim=1)
         else:
@@ -109,15 +135,17 @@ class SpikingForwardForwardLayer(nn.Module):
         g_pos = self.compute_goodness(sp_pos, v_pos)
         g_neg = self.compute_goodness(sp_neg, v_neg)
 
+        # トレーニング中のみ閾値を更新
         if self.training:
             with torch.no_grad():
                 mean_pos_g = g_pos.mean()
-                # deviceエラー回避のため、計算に使用するスカラもTensorであることを意識
                 self.running_threshold.mul_(
                     1 - self.threshold_momentum).add_(mean_pos_g * self.threshold_momentum)
 
         current_threshold = self.running_threshold.item()
 
+        # Loss計算: Posは閾値より大きく、Negは閾値より小さくなるように学習
+        # softplusを使って滑らかに損失を与える
         loss = F.softplus(-(g_pos - current_threshold)).mean() + \
             F.softplus(g_neg - current_threshold).mean()
 
@@ -131,24 +159,33 @@ class ForwardForwardLayer(nn.Module):
     def __init__(self, forward_block, threshold=2.0, learning_rate=0.001):
         super().__init__()
         self.block = forward_block
-        self.threshold = threshold
         self.optimizer = torch.optim.Adam(
             self.block.parameters(), lr=learning_rate)
         self.is_conv = any(isinstance(m, nn.Conv2d)
                            for m in self.block.modules())
+        
+        # 固定閾値ではなく、動的閾値を導入（爆発防止）
+        self.register_buffer("running_threshold", torch.tensor(threshold))
+        self.threshold_momentum = 0.05
 
     def forward(self, x):
         if self.is_conv:
             norm = x.norm(2, dim=[1, 2, 3] if x.dim() ==
                           4 else [1], keepdim=True) + 1e-8
             return self.block(x / norm)
+        
+        # フラット化して正規化
         x_flat = x.reshape(x.size(0), -1) if x.dim() > 2 else x
-        return self.block(x_flat / (x_flat.norm(2, 1, keepdim=True) + 1e-8))
+        x_norm = x_flat / (x_flat.norm(2, 1, keepdim=True) + 1e-8)
+        
+        # Blockを通す
+        return self.block(x_norm)
 
     def compute_goodness(self, hidden: torch.Tensor) -> torch.Tensor:
         if self.is_conv:
             dims = list(range(1, hidden.dim()))
             return hidden.pow(2).mean(dim=dims)
+        # (B, D) -> (B,)
         return hidden.pow(2).mean(dim=1)
 
     def train_step(self, x_pos, x_neg):
@@ -158,8 +195,20 @@ class ForwardForwardLayer(nn.Module):
         g_pos = self.compute_goodness(out_pos)
         g_neg = self.compute_goodness(out_neg)
 
-        loss = F.softplus(-(g_pos - self.threshold)).mean() + \
-            F.softplus(g_neg - self.threshold).mean()
+        # 動的閾値の更新
+        if self.training:
+            with torch.no_grad():
+                mean_pos_g = g_pos.mean()
+                # 異常値除外のためのガード
+                if not torch.isnan(mean_pos_g) and not torch.isinf(mean_pos_g):
+                    self.running_threshold.mul_(
+                        1 - self.threshold_momentum).add_(mean_pos_g * self.threshold_momentum)
+        
+        current_threshold = self.running_threshold.item()
+
+        # 損失関数
+        loss = F.softplus(-(g_pos - current_threshold)).mean() + \
+            F.softplus(g_neg - current_threshold).mean()
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.block.parameters(), max_norm=1.0)
@@ -184,6 +233,7 @@ class ForwardForwardTrainer(AbstractTrainer):
         self.snn_reset = self.config.get('snn_reset', 'subtract')
 
         for layer in model.children():
+            # LinearやConv2dのみForwardForwardレイヤー化する
             if isinstance(layer, (nn.Linear, nn.Conv2d)):
                 lr = self.config.get("learning_rate", 0.001)
 
@@ -202,12 +252,13 @@ class ForwardForwardTrainer(AbstractTrainer):
                     ff = ForwardForwardLayer(nn.Sequential(
                         layer), threshold=threshold, learning_rate=lr)
 
-                # 【重要】 ここで生成した層を明示的にデバイスへ転送する
+                # 生成した層を明示的にデバイスへ転送
                 ff = ff.to(device)
 
                 self.ff_layers.append(ff)
                 self.execution_pipeline.append(ff)
             else:
+                # ReLUなどはそのままパイプラインに追加
                 self.execution_pipeline.append(layer.to(device))
 
     def overlay_y_on_x(self, x, y):
@@ -254,17 +305,20 @@ class ForwardForwardTrainer(AbstractTrainer):
                     batch_pos_g += g_pos
                     batch_neg_g += g_neg
 
+                    # 次のレイヤーへの入力を作成
                     with torch.no_grad():
                         out_pos = layer(x_pos)
                         out_neg = layer(x_neg)
 
                         if isinstance(out_pos, tuple):
+                            # SNNの場合は(spikes, v_mem)のタプルが返るためspikesを使う
                             x_pos = out_pos[0].detach()
                             x_neg = out_neg[0].detach()
                         else:
                             x_pos = out_pos.detach()
                             x_neg = out_neg.detach()
                 else:
+                    # ReLUなどの通常レイヤー
                     x_pos = layer(x_pos)
                     x_neg = layer(x_neg)
 
