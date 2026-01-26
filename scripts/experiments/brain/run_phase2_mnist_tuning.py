@@ -1,6 +1,6 @@
 # ファイルパス: scripts/experiments/brain/run_phase2_mnist_tuning.py
 # 日本語タイトル: run_phase2_mnist_tuning
-# 目的: 画像入力レベルの再調整 (1.5)
+# 目的: Linear Drive版の実行
 
 import sys
 import os
@@ -17,7 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from snn_research.models.visual_cortex_v2 import VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("Phase2_MNIST_Rev29")
+logger = logging.getLogger("Phase2_MNIST_Rev32")
 
 class MNISTOverlayProcessor:
     def __init__(self, device):
@@ -25,19 +25,19 @@ class MNISTOverlayProcessor:
     
     def overlay_label(self, x: torch.Tensor, labels: Optional[torch.Tensor]) -> torch.Tensor:
         x = x.view(x.size(0), -1).to(self.device)
-        # V1にNormがないため、入力値を慎重に設定 (1.5)
-        x = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8) * 1.5
         
         batch_size = x.size(0)
         
         if labels is None:
             zeros = torch.zeros(batch_size, 10, device=self.device)
-            return torch.cat([x, zeros], dim=1)
+            combined = torch.cat([x, zeros], dim=1)
         else:
             labels = labels.to(self.device)
-            # Label Gain (V1には効きにくいが、V2には効く)
-            one_hot = F.one_hot(labels, num_classes=10).float() * 4.0
-            return torch.cat([x, one_hot], dim=1)
+            one_hot = F.one_hot(labels, num_classes=10).float()
+            # ラベル強度 9.0 (維持)
+            combined = torch.cat([x, one_hot * 9.0], dim=1)
+            
+        return combined
 
 def get_mnist_loaders(batch_size=64):
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
@@ -70,8 +70,7 @@ def evaluate(brain, test_loader, processor, device):
                 x_in = processor.overlay_label(data, torch.tensor([lbl], device=device))
                 brain(x_in, phase="inference")
                 stats = brain.get_goodness()
-                # ラベルの影響が強く出るV2/V3で判断
-                raw = stats.get("V2_goodness", 0) + stats.get("V3_goodness", 0)
+                raw = stats.get("V1_goodness", 0) + stats.get("V2_goodness", 0) + stats.get("V3_goodness", 0)
                 scores.append(raw)
             
             pred = np.argmax(scores)
@@ -81,14 +80,13 @@ def evaluate(brain, test_loader, processor, device):
             total += 1
             
             if i < debug_limit:
-                # これでスコアがバラつけば成功
                 logger.info(f"Sample {i}: True={target} Pred={pred} | Scores={np.round(scores, 1).tolist()}")
 
     logger.info(f"Prediction Distribution: {pred_counts}")
     return 100.0 * correct / total
 
 def run_tuning():
-    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev29: Sensory Dominance)")
+    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev32: Linear Drive)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     config = {
@@ -96,7 +94,7 @@ def run_tuning():
         "hidden_dim": 2000,
         "num_layers": 3,
         "learning_rate": 0.05,
-        "ff_threshold": 1500.0, 
+        "ff_threshold": 600.0, # Raised
         "w_decay": 0.01 
     }
     
@@ -121,7 +119,8 @@ def run_tuning():
             x_pos = processor.overlay_label(data, target)
             brain(x_pos, phase="wake")
             with torch.no_grad():
-                total_pos_g += brain.get_goodness().get("V3_goodness", 0)
+                g = brain.get_goodness()
+                total_pos_g += (g["V1_goodness"] + g["V2_goodness"] + g["V3_goodness"])
             
             # Neg
             brain.reset_state()
@@ -130,7 +129,8 @@ def run_tuning():
             x_neg = processor.overlay_label(data, rnd)
             brain(x_neg, phase="sleep")
             with torch.no_grad():
-                total_neg_g += brain.get_goodness().get("V3_goodness", 0)
+                g = brain.get_goodness()
+                total_neg_g += (g["V1_goodness"] + g["V2_goodness"] + g["V3_goodness"])
             
             batch_count += 1
             if batch_count % 50 == 0:

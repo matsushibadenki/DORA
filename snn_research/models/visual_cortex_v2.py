@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/models/visual_cortex_v2.py
 # 日本語タイトル: visual_cortex_v2
-# 目的: V1層のLayerNorm廃止による画像信号の復権（Rev29）
+# 目的: 線形誤差更新による学習の加速とマージン拡大 (Rev32)
 
 import torch
 import torch.nn as nn
@@ -15,15 +15,13 @@ logger = logging.getLogger(__name__)
 
 class VisualCortexV2(nn.Module):
     """
-    Visual Cortex V2 - Phase 2 Rev29 (Sensory Dominance)
+    Visual Cortex V2 - Phase 2 Rev32 (Linear Drive)
     
     修正内容:
-    - V1層の LayerNorm を廃止。
-      -> 画像入力のエネルギーを直接ニューロン活動に反映させ、
-         「画像が変われば活動が変わる」ことを物理的に強制する。
-    - V1へのラベル注入を極小化 (Gain 0.05)。
-      -> V1はほぼ純粋な視覚野として振る舞い、Pos/Negの区別はわずかなバイアスで行う。
-    - V2/V3は LayerNorm を維持し、抽象化と統合を行う。
+    - 誤差計算を Sigmoid から Linear (ReLU) に変更。
+      -> 閾値から離れていても学習が止まらないようにする（勾配消失の防止）。
+    - 閾値を 150.0 -> 600.0 に引き上げ、現在の活動レベルに合わせる。
+    - Vector Length を 30.0 -> 50.0 に拡大し、分離の余地を作る。
     """
 
     def __init__(self, device: torch.device, config: Optional[Dict[str, Any]] = None):
@@ -38,24 +36,18 @@ class VisualCortexV2(nn.Module):
         self.config.setdefault("dt", 1.0)
         self.config.setdefault("tau_mem", 20.0)
         
-        self.learning_rate = self.config.get("learning_rate", 0.05)
-        # V1は正規化なしで大きな値になる可能性があるため、閾値を層ごとに管理するのが理想だが
-        # ここでは全体的に少し高めに設定しておく
-        self.ff_threshold = self.config.get("ff_threshold", 1500.0) 
+        self.learning_rate = self.config.get("learning_rate", 0.05) # 少し下げる（Linearは値が大きくなりやすいため）
+        
+        # Vector Length: 50.0 -> Max Energy = 2500
+        # 期待される平均活動 ~ 1250
+        self.vector_length = 50.0
+        
+        # 閾値を中央付近に設定
+        self.ff_threshold = self.config.get("ff_threshold", 600.0) 
         self.sparsity = 0.5 
 
         self.substrate = SpikingNeuralSubstrate(self.config, self.device)
         self.layer_names = [f"V{i+1}" for i in range(self.num_layers)]
-        
-        self.label_projections = nn.ModuleDict()
-        self.layer_norms = nn.ModuleDict()
-
-        for name in self.layer_names:
-            self.label_projections[name] = nn.Linear(10, self.hidden_dim, bias=False)
-            
-            # 【重要修正】V1以外のみLayerNormを適用
-            if name != "V1":
-                self.layer_norms[name] = nn.LayerNorm(self.hidden_dim, elementwise_affine=True)
         
         self._build_architecture()
         
@@ -63,19 +55,16 @@ class VisualCortexV2(nn.Module):
         self.layer_traces: Dict[str, torch.Tensor] = {}
 
     def _build_architecture(self):
-        self.substrate.add_neuron_group("Retina", 784)
+        self.substrate.add_neuron_group("Retina", self.input_dim)
 
         prev_layer = "Retina"
         for i, layer_name in enumerate(self.layer_names):
             self.substrate.add_neuron_group(layer_name, self.hidden_dim)
 
-            # V1の重みは減衰させない（入力を維持するため）
-            decay = 0.0 if layer_name == "V1" else 0.02
-            
             ff_rule = ForwardForwardRule(
                 learning_rate=self.learning_rate,
                 threshold=self.ff_threshold,
-                w_decay=decay
+                w_decay=0.01 
             )
 
             projection_name = f"{prev_layer.lower()}_to_{layer_name.lower()}"
@@ -88,37 +77,17 @@ class VisualCortexV2(nn.Module):
                 synapse = cast(nn.Module, proj.synapse)
                 if hasattr(synapse, 'weight'):
                     w = cast(torch.Tensor, synapse.weight)
-                    # 初期結合強度
-                    nn.init.orthogonal_(w, gain=1.2)
+                    nn.init.orthogonal_(w, gain=1.0)
             
             prev_layer = layer_name
-            
-        with torch.no_grad():
-            for name, proj in self.label_projections.items():
-                if name == "V1":
-                    # 【重要修正】V1へのラベル影響は極小にする (0.05)
-                    # これにより、V1の活動の95%以上は画像由来となる
-                    nn.init.orthogonal_(proj.weight, gain=0.05)
-                else:
-                    # 後続層はしっかり統合する
-                    nn.init.orthogonal_(proj.weight, gain=0.5)
 
     def forward(self, x: torch.Tensor, phase: str = "wake") -> Dict[str, torch.Tensor]:
         x = x.to(self.device).float()
         
-        img = x[:, :784]
-        lbl = x[:, 784:]
+        # 入力正規化
+        x_norm = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8) * self.vector_length
         
-        # 入力ゲイン: V1にLayerNormがないため、この値が直接Goodnessの大きさに直結する
-        # sqrt(784) * 1.5 ~= 40. Energy ~= 1600. Threshold 1500とマッチする。
-        img = img / (img.norm(p=2, dim=1, keepdim=True) + 1e-8) * 1.5
-        
-        batch_size = x.size(0)
-        label_currents = {}
-        for name in self.layer_names:
-            label_currents[name] = self.label_projections[name](lbl)
-
-        inputs = {"Retina": img}
+        inputs = {"Retina": x_norm}
         
         learning_phase = "neutral"
         inject_noise = False
@@ -130,11 +99,10 @@ class VisualCortexV2(nn.Module):
             learning_phase = "negative"
             inject_noise = True
 
+        batch_size = x.size(0)
         if inject_noise:
             for name in self.layer_names:
-                # ノイズもV1は控えめに
-                scale = 0.05 if name == "V1" else 0.1
-                noise = torch.randn(batch_size, self.hidden_dim, device=self.device) * scale
+                noise = torch.randn(batch_size, self.hidden_dim, device=self.device) * 0.5
                 if name not in inputs:
                     inputs[name] = noise
                 else:
@@ -147,59 +115,91 @@ class VisualCortexV2(nn.Module):
 
         for t in range(simulation_steps):
             current_phase = learning_phase if t >= 3 else "neutral"
-            out = self.substrate.forward_step(inputs, phase=current_phase)
-            last_out = out
+            current_input = inputs["Retina"]
+            
+            for i, layer_name in enumerate(self.layer_names):
+                prev_name = "Retina" if i == 0 else self.layer_names[i-1]
+                
+                proj_name = f"{prev_name.lower()}_to_{layer_name.lower()}"
+                proj = self.substrate.projections[proj_name]
+                synapse = cast(nn.Module, proj.synapse)
+                
+                weight = synapse.weight
+                mem = F.linear(current_input, weight)
+                
+                # L2 Normalization
+                norm = mem.norm(p=2, dim=1, keepdim=True) + 1e-8
+                mem_normalized = mem / norm * self.vector_length
+                
+                activity = torch.relu(mem_normalized)
+                self.layer_traces[layer_name] = 0.6 * self.layer_traces[layer_name] + 0.4 * activity
+                
+                current_input = activity.detach() 
 
-            with torch.no_grad():
-                for name in self.layer_names:
-                    group = self.substrate.neuron_groups[name]
-                    
-                    if hasattr(group, "mem"):
-                        mem = cast(torch.Tensor, group.mem)
-                        mem.add_(label_currents[name])
-                        
-                        # V1は正規化しない（Raw Signal）
-                        if name == "V1":
-                            activity = torch.relu(mem)
-                        else:
-                            # V2/V3は正規化して安定化
-                            normalized_mem = self.layer_norms[name](mem)
-                            activity = torch.relu(normalized_mem)
-                            
-                        self.layer_traces[name] = 0.6 * self.layer_traces[name] + 0.4 * activity
-
-                        if t == simulation_steps - 1:
-                            rate = (activity > 0).float().mean().item()
-                            self.activity_history[name] = 0.9 * self.activity_history[name] + 0.1 * rate
+                if t == simulation_steps - 1:
+                    rate = (activity > 0).float().mean().item()
+                    self.activity_history[layer_name] = 0.9 * self.activity_history[layer_name] + 0.1 * rate
         
-        # Update Label Weights
+        # Update
         if learning_phase != "neutral" and phase != "inference":
             with torch.no_grad():
-                lr_label = 0.05
+                current_input = inputs["Retina"]
                 
-                for name in self.layer_names:
-                    v_activity = self.layer_traces[name]
+                for i, layer_name in enumerate(self.layer_names):
+                    prev_name = "Retina" if i == 0 else self.layer_names[i-1]
+                    proj_name = f"{prev_name.lower()}_to_{layer_name.lower()}"
+                    proj = self.substrate.projections[proj_name]
+                    synapse = cast(nn.Module, proj.synapse)
+                    
+                    v_activity = self.layer_traces[layer_name]
                     goodness = v_activity.pow(2).sum(dim=1, keepdim=True)
                     
+                    # 【重要修正】Linear Error Calculation
+                    # Sigmoidによる飽和を防ぎ、常に強い勾配を与える
                     if learning_phase == "positive":
-                        error = torch.sigmoid(self.ff_threshold - goodness)
+                        # Posは閾値より大きくしたい。不足分(Threshold - Goodness)をエラーとする。
+                        # 上限を設けないと不安定になるので、適度にクリップするか、ReLUを使う
+                        # Goodness > Threshold の場合も、さらに大きくしてマージンを稼ぐ（過学習リスクはあるが分離優先）
+                        raw_error = self.ff_threshold - goodness
+                        
+                        # 閾値以下なら強くプラス、閾値以上でも少しプラス（マージン確保）
+                        # ここではシンプルに閾値との差分を使う
+                        scale = raw_error # 正なら上げろ、負なら下げろ（いやPosは常に上げたい）
+                        
+                        # Hinton方式: log(1 + exp(...)) の微分は sigmoid。
+                        # ここでは、Posをとにかく「上げる」方向に一定の力をかける
+                        # ただし、Goodnessが極端に大きい場合は抑える
+                        scale = 1.0 # 常に上げる
+                        
+                        # もっとスマートな方法:
+                        # 閾値を超えていない分だけ強く押す
+                        scale = torch.relu(self.ff_threshold + 200.0 - goodness) / 100.0
                         direction = 1.0
                     else:
-                        error = torch.sigmoid(goodness - self.ff_threshold)
+                        # Negは閾値より小さくしたい。超過分(Goodness - Threshold)をエラーとする。
+                        # 下限なしで押し下げる
+                        scale = torch.relu(goodness - (self.ff_threshold - 200.0)) / 100.0
                         direction = -1.0
                     
-                    mean_error = error.mean()
+                    mean_scale = scale.mean()
                     
-                    # (Hidden, Batch) @ (Batch, 10) -> (Hidden, 10)
-                    delta_w = (v_activity.t() @ lbl) / batch_size
+                    if i == 0:
+                        x_in = inputs["Retina"]
+                    else:
+                        x_in = self.layer_traces[prev_name]
                     
-                    proj = self.label_projections[name]
-                    proj.weight.add_(delta_w * direction * mean_error * lr_label)
+                    delta_w = (v_activity.t() @ x_in) / batch_size
                     
-                    norm = proj.weight.norm(dim=1, keepdim=True) + 1e-8
-                    # V1のラベル重みは小さく保つ
-                    limit = 0.5 if name == "V1" else 3.0
-                    proj.weight.div_(norm).mul_(torch.clamp(norm, max=limit))
+                    lr = self.learning_rate
+                    # scaleが0になることもあるので、微小なベース学習率を持たせるかどうか
+                    # ここではscaleに依存させる
+                    
+                    synapse.weight.add_(delta_w * direction * mean_scale * lr)
+                    
+                    w_norm = synapse.weight.norm(dim=1, keepdim=True) + 1e-8
+                    synapse.weight.div_(w_norm).mul_(torch.clamp(w_norm, max=2.0))
+                    
+                    current_input = v_activity
 
         return last_out
 
@@ -221,5 +221,4 @@ class VisualCortexV2(nn.Module):
         return metrics
 
     def reset_state(self):
-        self.substrate.reset_state()
         self.layer_traces = {}
