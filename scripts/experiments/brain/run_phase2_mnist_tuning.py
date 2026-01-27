@@ -1,6 +1,6 @@
 # path: scripts/experiments/brain/run_phase2_mnist_tuning.py
 # run_phase2_mnist_tuning
-# 目的: 動的k-WTAとハードネガティブ学習による識別精度の極大化 (Rev47)
+# 目的: Rev46の識別力と絶対ノルム固定による安定化 (Rev54)
 
 import sys
 import os
@@ -18,57 +18,47 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from snn_research.models.visual_cortex_v2 import VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("Phase2_MNIST_Rev47")
+logger = logging.getLogger("Phase2_MNIST_Rev54")
 
 class MNISTOverlayProcessor:
-    """MNIST画像にラベル情報を高品質に重畳するプロセッサ (拡張版)"""
+    """MNIST画像にラベル情報を重畳するプロセッサ (Rev46成功ロジック)"""
     def __init__(self, device):
         self.device = device
     
-    def overlay_label(self, x: torch.Tensor, labels: Optional[torch.Tensor], augmentation=False) -> torch.Tensor:
+    def overlay_label(self, x: torch.Tensor, labels: Optional[torch.Tensor]) -> torch.Tensor:
         x = x.view(x.size(0), -1).to(self.device)
         batch_size = x.size(0)
         
-        # 0. 学習時のみ微小なノイズを加えて堅牢化
-        if augmentation:
-            noise = torch.randn_like(x) * 0.05
-            x = x + noise
-            
-        # 統計的標準化
+        # 1. 形状を際立たせる標準化 (成功の鍵)
         x = (x - x.mean(dim=1, keepdim=True)) / (x.std(dim=1, keepdim=True) + 1e-6)
         
         if labels is None:
-            zeros = torch.zeros(batch_size, 10, device=self.device)
-            combined = torch.cat([x, zeros], dim=1)
+            label_vec = torch.zeros(batch_size, 10, device=self.device)
         else:
             labels = labels.to(self.device)
-            one_hot = F.one_hot(labels, num_classes=10).float()
-            # ラベル強度をさらに最適化（形状情報を消さない限界点）
-            combined = torch.cat([x, one_hot * 1.8], dim=1)
+            label_vec = F.one_hot(labels, num_classes=10).float() * 1.5 # 識別力が最も高かった強度
             
-        # エネルギーの正規化
-        combined = combined / (combined.norm(p=2, dim=1, keepdim=True) + 1e-4)
+        # 2. 結合
+        combined = torch.cat([x, label_vec], dim=1)
+        
+        # 3. エネルギーを1に固定 (Rev52の安定化)
+        combined = combined / (combined.norm(p=2, dim=1, keepdim=True) + 1e-6)
         return combined
 
-def adaptive_refine(brain, epoch, total_epochs):
-    """
-    エポックに応じてスパース性と重みの拘束を調整する。
-    """
-    progress = epoch / total_epochs
+def physical_stabilization(brain):
+    """重みのノルムを1.0に物理的に固定する"""
     with torch.no_grad():
         for name, param in brain.named_parameters():
             if 'weight' in name:
                 norm = param.data.norm(p=2, dim=-1, keepdim=True)
-                # 学習が進むにつれて重みのノルムをわずかに拡大し、解像度を上げる
-                target_norm = 1.0 + (progress * 0.5)
-                param.data.copy_(param.data * (target_norm / (norm + 1e-5)))
+                param.data.copy_(param.data / (norm + 1e-6))
 
 def evaluate(brain, test_loader, processor, device):
-    """ハード投票制によるアンサンブル評価"""
+    """層別確信度の幾何平均評価"""
     brain.eval()
     correct = 0
     total = 0
-    limit = 500 
+    limit = 600 
     
     loader = DataLoader(test_loader.dataset, batch_size=1, shuffle=True)
     pred_counts = {i: 0 for i in range(10)}
@@ -86,16 +76,16 @@ def evaluate(brain, test_loader, processor, device):
                 brain(x_in, phase="inference")
                 stats = brain.get_goodness()
                 
-                # 層別のスコア（対数空間での幾何平均的評価）
-                scores = []
+                # 層ごとのGoodnessを抽出し、対数空間で評価
+                gs = []
                 for k, v in stats.items():
                     if "goodness" in k:
                         val = v.item() if torch.is_tensor(v) else float(v)
-                        # 深い層ほど抽象的な特徴（数字の全体像）を捉えていると仮定
-                        weight = 2.0 if "V3" in k else (1.5 if "V2" in k else 1.0)
-                        scores.append(math.log(max(1e-9, val)) * weight)
+                        # V3(概念)を1.5倍、他を1.0倍として合意形成
+                        w = 1.5 if "V3" in k else 1.0
+                        gs.append(math.log(max(1e-9, val)) * w)
                 
-                label_scores.append(sum(scores))
+                label_scores.append(sum(gs) if gs else -1e10)
             
             pred = np.argmax(label_scores)
             pred_counts[pred] += 1
@@ -107,29 +97,29 @@ def evaluate(brain, test_loader, processor, device):
     return acc
 
 def run_tuning():
-    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev47: Hard-Negative & Dynamic WTA)")
+    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev54: Strict Physical Stable)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    total_epochs = 12 # 特徴の定着のために少し延長
     config = {
         "input_dim": 794,
-        "hidden_dim": 3072, # 容量を最大化
+        "hidden_dim": 2048, # 安定のためやや絞る
         "num_layers": 3,
-        "learning_rate": 0.002, 
-        "ff_threshold": 4.0,
-        "w_decay": 0.02,
-        "sparsity": 0.1 # 初期スパース性
+        "learning_rate": 0.001, # 低速・確実な学習
+        "ff_threshold": 3.0,
+        "w_decay": 0.05,
+        "sparsity": 0.1
     }
     
     brain = VisualCortexV2(device, config).to(device)
     processor = MNISTOverlayProcessor(device)
     train_loader, test_loader = get_mnist_loaders(batch_size=128)
     
+    epochs = 10
     base_lr = config["learning_rate"]
 
-    for epoch in range(1, total_epochs + 1):
-        # 指数関数的減衰をより緩やかに (0.9 -> 0.95)
-        current_lr = base_lr * (0.95 ** (epoch - 1))
+    for epoch in range(1, epochs + 1):
+        # 指数減衰 (0.9)
+        current_lr = base_lr * (0.9 ** (epoch - 1))
         
         brain.train()
         total_pos_g, total_neg_g = 0.0, 0.0
@@ -142,27 +132,24 @@ def run_tuning():
             
             # --- Positive Phase ---
             brain.reset_state()
-            x_pos = processor.overlay_label(data, target, augmentation=True)
+            x_pos = processor.overlay_label(data, target)
             brain(x_pos, phase="wake")
             with torch.no_grad():
                 g_pos = brain.get_goodness()
                 total_pos_g += float(sum(v for k, v in g_pos.items() if "goodness" in k))
             
-            # --- Negative Phase (Hard-Negative Mining) ---
+            # --- Negative Phase ---
             brain.reset_state()
-            # 完全にランダムではなく、正解とわずかにずらした値を優先（識別境界の強化）
-            with torch.no_grad():
-                # 誤ったラベルでの推論を試み、最もGoodnessが高い（紛らわしい）ラベルを一部に混ぜる
-                rnd = (target + torch.randint(1, 10, target.shape, device=device)) % 10
-            
+            # 難読ラベルによるコントラスト学習
+            rnd = (target + torch.randint(1, 10, target.shape, device=device)) % 10
             x_neg = processor.overlay_label(data, rnd)
             brain(x_neg, phase="sleep")
             with torch.no_grad():
                 g_neg = brain.get_goodness()
                 total_neg_g += float(sum(v for k, v in g_neg.items() if "goodness" in k))
             
-            # 動的正規化
-            adaptive_refine(brain, epoch, total_epochs)
+            # バッチごとの物理的強制正規化 (Rev54の肝)
+            physical_stabilization(brain)
             
             if batch_idx % 100 == 0 and batch_idx > 0:
                 avg_pos = total_pos_g / 100.0
@@ -171,7 +158,7 @@ def run_tuning():
                 total_pos_g, total_neg_g = 0.0, 0.0
 
         acc = evaluate(brain, test_loader, processor, device)
-        logger.info(f"✅ Epoch {epoch} Final Accuracy: {acc:.2f}%")
+        logger.info(f"✅ Epoch {epoch} Accuracy: {acc:.2f}%")
 
 def get_mnist_loaders(batch_size):
     transform = transforms.Compose([
