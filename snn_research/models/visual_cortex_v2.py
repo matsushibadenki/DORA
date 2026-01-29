@@ -114,7 +114,7 @@ class VisualCortexV2(nn.Module):
                     inputs[name] += noise
 
         simulation_steps = 6
-        last_out = {}
+        last_out: Dict[str, torch.Tensor] = {}
         self.layer_traces = {name: torch.zeros(batch_size, self.hidden_dim, device=self.device) 
                              for name in self.layer_names}
 
@@ -129,7 +129,7 @@ class VisualCortexV2(nn.Module):
                 proj = self.substrate.projections[proj_name]
                 synapse = cast(nn.Module, proj.synapse)
                 
-                weight = synapse.weight
+                weight = cast(torch.Tensor, synapse.weight)
                 mem = F.linear(current_input, weight)
                 
                 # 【重要】k-WTA (k-Winners-Take-All)
@@ -190,7 +190,10 @@ class VisualCortexV2(nn.Module):
                     delta_w = (v_activity.t() @ x_in) / batch_size
                     
                     lr = self.learning_rate
-                    synapse.weight.add_(delta_w * direction * mean_scale * lr)
+                    
+                    # mypy fix: Explicitly cast to Tensor to access add_
+                    w_tensor = cast(torch.Tensor, synapse.weight)
+                    w_tensor.add_(delta_w * direction * mean_scale * lr)
                     
                     # k-WTAでは少数のニューロンに重みが集中しやすいため、
                     # 個別の重みベクトルの長さを正規化するのが有効

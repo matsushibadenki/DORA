@@ -4,10 +4,11 @@
 #   完成したBrain v2.0と自由に対話するためのインターフェース。
 #   学習済み重みを安全にロードし、あなたの入力を脳に伝達します。
 #   [Fix] mypyエラー修正: forwardシグネチャの不一致とlayerキャストを追加。
+#   [Fix] ImportError修正: SpikingMambaBlock -> SpikingMamba2Block
 
 from spikingjelly.activation_based import functional, surrogate, base
 from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
-from snn_research.core.mamba_core import SpikingMambaBlock
+from snn_research.core.mamba_core import SpikingMamba2Block  # 修正
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
 import sys
 import os
@@ -91,13 +92,11 @@ def force_replace_components(model, device):
                     child.in_features, child.out_features, bias=child.bias is not None)
                 setattr(module, child_name, new_layer.to(device))
     for layer in model.layers:
-        if isinstance(layer, SpikingMambaBlock):
+        if isinstance(layer, SpikingMamba2Block):  # 修正
             feat_conv = layer.lif_conv.features
-            feat_out = layer.lif_out.features
+            # Note: Removed lif_out adjustment as Mamba2Block in core does not have lif_out
             layer.lif_conv = SimpleLIFNeuron(
                 features=feat_conv, tau_mem=4.0, base_threshold=0.01).to(device)
-            layer.lif_out = SimpleLIFNeuron(
-                features=feat_out, tau_mem=4.0, base_threshold=0.01).to(device)
 
 # --- メイン処理 ---
 

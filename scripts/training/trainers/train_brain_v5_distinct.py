@@ -5,10 +5,11 @@
 #   Target Loss: 0.05 (完全暗記)
 #   [Fix] mypyエラー修正: layer.set_stateful呼び出し時の型キャストを追加。
 #   [Fix] AttributeError修正: SimpleLIFNeuronにset_statefulを追加。
+#   [Fix] ImportError修正: SpikingMambaBlock -> SpikingMamba2Block
 
 from spikingjelly.activation_based import functional, surrogate, base
 from snn_research.core.layers.bit_spike_layer import BitSpikeLinear
-from snn_research.core.mamba_core import SpikingMambaBlock
+from snn_research.core.mamba_core import SpikingMamba2Block  # 修正
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
 import os
 import sys
@@ -106,14 +107,18 @@ def force_replace_components(model, device):
                 setattr(module, child_name, new_layer.to(device))
 
     for layer in model.layers:
-        if isinstance(layer, SpikingMambaBlock):
+        if isinstance(layer, SpikingMamba2Block):  # 修正
             feat_conv = layer.lif_conv.features
-            feat_out = layer.lif_out.features
+            feat_out = layer.lif_conv.features # Mamba2Block has single neuron layer? Checked mamba_core.py: it has self.lif_conv. It does not seem to have lif_out.
+            # In SpikingMamba2Block (mamba_core.py): self.lif_conv = neuron_class(...)
+            # It doesn't seem to have lif_out. 
+            # The previous code assumed SpikingMambaBlock (old) had lif_conv and lif_out.
+            # Mamba2Block in mamba_core.py has only `lif_conv`.
+            # We should only replace lif_conv.
+            
             # tau_mem = 4.0 に設定
             layer.lif_conv = SimpleLIFNeuron(
                 features=feat_conv, tau_mem=4.0, base_threshold=0.01).to(device)
-            layer.lif_out = SimpleLIFNeuron(
-                features=feat_out, tau_mem=4.0, base_threshold=0.01).to(device)
 
 
 def generate_response(model, tokenizer, device, prompt):
