@@ -1,6 +1,6 @@
 # path: scripts/experiments/brain/run_phase2_mnist_tuning.py
 # run_phase2_mnist_tuning
-# 目的: 重みエネルギーの増加に閾値を追従させ、後半の爆発を防ぐ (Rev86)
+# 目的: 「成長」を廃止し、最も精度の高かった物理パラメータ領域に固定して学習する (Rev87)
 
 import sys
 import os
@@ -18,10 +18,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from snn_research.models.visual_cortex_v2 import VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("Phase2_MNIST_Rev86")
+logger = logging.getLogger("Phase2_MNIST_Rev87")
 
 class MNISTOverlayProcessor:
-    """MNIST画像プロセッサ (Rev85維持: Min-Max & Unit-Norm)"""
+    """MNIST画像プロセッサ (Min-Max & Unit-Norm)"""
     def __init__(self, device):
         self.device = device
     
@@ -29,7 +29,7 @@ class MNISTOverlayProcessor:
         x = x.view(x.size(0), -1).to(self.device)
         batch_size = x.size(0)
         
-        # 1. Min-Max Scaling
+        # 1. Min-Max Scaling (-1.0 to 1.0)
         x_min = x.min(dim=1, keepdim=True)[0]
         x_max = x.max(dim=1, keepdim=True)[0]
         x = (x - x_min) / (x_max - x_min + 1e-6)
@@ -40,8 +40,8 @@ class MNISTOverlayProcessor:
         else:
             labels = labels.to(self.device)
             one_hot = F.one_hot(labels, num_classes=10).float()
-            # ラベル強度 1.8
-            label_vec = one_hot * 1.8
+            # ラベル強度 1.6 (固定)
+            label_vec = one_hot * 1.6
             
         # 2. 結合
         combined = torch.cat([x, label_vec], dim=1)
@@ -70,10 +70,10 @@ def generate_mixed_negatives(targets, device):
             neg_targets[i] = neg_lbl
     return neg_targets.to(device)
 
-def weight_growth_schedule(brain, epoch):
-    """重みを 1.0 -> 1.8 へ成長させる"""
+def weight_lockdown(brain):
+    """重みのノルムをベストスコア領域である「1.4」に固定"""
+    target_norm = 1.4
     with torch.no_grad():
-        target_norm = 1.0 + (epoch * 0.072) # Epoch 12で 1.86
         for name, param in brain.named_parameters():
             if 'weight' in name:
                 norm = param.data.norm(p=2, dim=-1, keepdim=True)
@@ -106,6 +106,7 @@ def evaluate_flat(brain, test_loader, processor, device):
                 for k, v in stats.items():
                     if "goodness" in k:
                         val = v.item() if torch.is_tensor(v) else float(v)
+                        # フラット評価
                         gs.append(math.log(max(1e-9, val)))
                 
                 label_scores.append(sum(gs) if gs else -1e10)
@@ -120,7 +121,7 @@ def evaluate_flat(brain, test_loader, processor, device):
     return acc
 
 def run_tuning():
-    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev86: Energy-Matched Threshold)")
+    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev87: Sweet Spot Lockdown)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     config = {
@@ -128,8 +129,8 @@ def run_tuning():
         "hidden_dim": 2560,
         "num_layers": 3,
         "learning_rate": 0.0012,
-        "ff_threshold": 3.0,
-        "w_decay": 0.02,
+        "ff_threshold": 3.5,   # 固定閾値 (Rev86のピーク時より少し下げて余裕を持たせる)
+        "w_decay": 0.0,        # 固定するので減衰なし
         "sparsity": 0.08
     }
     
@@ -143,16 +144,12 @@ def run_tuning():
     for epoch in range(1, epochs + 1):
         current_lr = base_lr * (0.95 ** (epoch - 1))
         
-        # Threshold Schedule: エネルギー増加(2乗則)に合わせて急上昇させる
-        # Epoch 1: 3.0 -> Epoch 12: 9.0
-        brain.ff_threshold = 3.0 + (epoch * 0.5) 
+        # 閾値固定
         
         brain.train()
         total_pos_g, total_neg_g = 0.0, 0.0
         
-        # Logに現在の設定を表示
-        current_norm = 1.0+(epoch*0.072)
-        logger.info(f"--- Epoch {epoch} Start (LR: {current_lr:.6f} | Norm: {current_norm:.2f} | Thres: {brain.ff_threshold:.1f}) ---")
+        logger.info(f"--- Epoch {epoch} Start (LR: {current_lr:.6f} | Norm: 1.4 | Thres: {brain.ff_threshold:.1f}) ---")
         
         for batch_idx, (data, target) in enumerate(train_loader):
             data = data.to(device)
@@ -175,8 +172,8 @@ def run_tuning():
                 g_neg = brain.get_goodness()
                 total_neg_g += float(sum(v for k, v in g_neg.items() if "goodness" in k))
             
-            # 重み成長
-            weight_growth_schedule(brain, epoch)
+            # 重み固定 (Norm=1.4)
+            weight_lockdown(brain)
             
             if batch_idx % 100 == 0 and batch_idx > 0:
                 avg_pos = total_pos_g / 100.0
