@@ -1,6 +1,6 @@
 # path: scripts/experiments/brain/run_phase2_mnist_tuning.py
 # run_phase2_mnist_tuning
-# 目的: Rev80（最高記録）の構成復元と、後半のタレ防止（Rev85）
+# 目的: 重みエネルギーの増加に閾値を追従させ、後半の爆発を防ぐ (Rev86)
 
 import sys
 import os
@@ -18,10 +18,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from snn_research.models.visual_cortex_v2 import VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("Phase2_MNIST_Rev85")
+logger = logging.getLogger("Phase2_MNIST_Rev86")
 
 class MNISTOverlayProcessor:
-    """MNIST画像プロセッサ (Rev80復刻: Min-Max & High-Label)"""
+    """MNIST画像プロセッサ (Rev85維持: Min-Max & Unit-Norm)"""
     def __init__(self, device):
         self.device = device
     
@@ -29,8 +29,7 @@ class MNISTOverlayProcessor:
         x = x.view(x.size(0), -1).to(self.device)
         batch_size = x.size(0)
         
-        # 1. Min-Max Scaling (-1.0 to 1.0)
-        # Rev80で成功した「最も素直な」正規化
+        # 1. Min-Max Scaling
         x_min = x.min(dim=1, keepdim=True)[0]
         x_max = x.max(dim=1, keepdim=True)[0]
         x = (x - x_min) / (x_max - x_min + 1e-6)
@@ -41,13 +40,13 @@ class MNISTOverlayProcessor:
         else:
             labels = labels.to(self.device)
             one_hot = F.one_hot(labels, num_classes=10).float()
-            # ラベル強度 1.8 (Rev80準拠)
+            # ラベル強度 1.8
             label_vec = one_hot * 1.8
             
         # 2. 結合
         combined = torch.cat([x, label_vec], dim=1)
         
-        # 3. Unit-Norm (必須)
+        # 3. Unit-Norm
         combined = combined / (combined.norm(p=2, dim=1, keepdim=True) + 1e-6)
         return combined
 
@@ -71,20 +70,17 @@ def generate_mixed_negatives(targets, device):
             neg_targets[i] = neg_lbl
     return neg_targets.to(device)
 
-def weight_growth_optimized(brain, epoch):
-    """
-    Rev80の成長曲線 (1.0 -> 2.0) を微調整し、
-    後半の精度低下を防ぐため (1.0 -> 1.8) に抑える。
-    """
+def weight_growth_schedule(brain, epoch):
+    """重みを 1.0 -> 1.8 へ成長させる"""
     with torch.no_grad():
-        target_norm = 1.0 + (epoch * 0.072) # Epoch 12で 約1.86
+        target_norm = 1.0 + (epoch * 0.072) # Epoch 12で 1.86
         for name, param in brain.named_parameters():
             if 'weight' in name:
                 norm = param.data.norm(p=2, dim=-1, keepdim=True)
                 param.data.copy_(param.data * (target_norm / (norm + 1e-6)))
 
 def evaluate_flat(brain, test_loader, processor, device):
-    """Rev80で好成績だった「全層フラット評価」"""
+    """全層フラット評価"""
     brain.eval()
     correct = 0
     total = 0
@@ -110,7 +106,6 @@ def evaluate_flat(brain, test_loader, processor, device):
                 for k, v in stats.items():
                     if "goodness" in k:
                         val = v.item() if torch.is_tensor(v) else float(v)
-                        # フラット評価 (V1の細部認識能力を活かす)
                         gs.append(math.log(max(1e-9, val)))
                 
                 label_scores.append(sum(gs) if gs else -1e10)
@@ -125,15 +120,15 @@ def evaluate_flat(brain, test_loader, processor, device):
     return acc
 
 def run_tuning():
-    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev85: Optimal Restoration)")
+    logger.info("🔧 Starting Phase 2 MNIST Tuning (Rev86: Energy-Matched Threshold)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     config = {
         "input_dim": 794,
         "hidden_dim": 2560,
         "num_layers": 3,
-        "learning_rate": 0.0012, # 安定実績のあるLR
-        "ff_threshold": 3.0,   # Rev80と同じスタート
+        "learning_rate": 0.0012,
+        "ff_threshold": 3.0,
         "w_decay": 0.02,
         "sparsity": 0.08
     }
@@ -148,13 +143,16 @@ def run_tuning():
     for epoch in range(1, epochs + 1):
         current_lr = base_lr * (0.95 ** (epoch - 1))
         
-        # Threshold: 3.0 -> 4.1 (Rev80と同じ推移)
-        brain.ff_threshold = 3.0 + (epoch * 0.1)
+        # Threshold Schedule: エネルギー増加(2乗則)に合わせて急上昇させる
+        # Epoch 1: 3.0 -> Epoch 12: 9.0
+        brain.ff_threshold = 3.0 + (epoch * 0.5) 
         
         brain.train()
         total_pos_g, total_neg_g = 0.0, 0.0
         
-        logger.info(f"--- Epoch {epoch} Start (LR: {current_lr:.6f} | Norm: {1.0+(epoch*0.072):.2f}) ---")
+        # Logに現在の設定を表示
+        current_norm = 1.0+(epoch*0.072)
+        logger.info(f"--- Epoch {epoch} Start (LR: {current_lr:.6f} | Norm: {current_norm:.2f} | Thres: {brain.ff_threshold:.1f}) ---")
         
         for batch_idx, (data, target) in enumerate(train_loader):
             data = data.to(device)
@@ -177,8 +175,8 @@ def run_tuning():
                 g_neg = brain.get_goodness()
                 total_neg_g += float(sum(v for k, v in g_neg.items() if "goodness" in k))
             
-            # 重み成長 (微調整版)
-            weight_growth_optimized(brain, epoch)
+            # 重み成長
+            weight_growth_schedule(brain, epoch)
             
             if batch_idx % 100 == 0 and batch_idx > 0:
                 avg_pos = total_pos_g / 100.0
