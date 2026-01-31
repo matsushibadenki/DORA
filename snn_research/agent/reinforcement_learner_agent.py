@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/agent/reinforcement_learner_agent.py
-# Title: RL Agent (Mypy Fix)
-# 修正: experience_bufferへのappend時の型エラーを修正 (Optional型の除外)。
+# Title: RL Agent (Mypy Fix & GRPO Tuning)
+# 修正: experience_bufferへのappend時の型エラー修正 + GRPO収束性向上のための温度パラメータ・ロジットスケーリング調整。
 
 import torch
 import torch.nn as nn
@@ -112,11 +112,15 @@ class ReinforcementLearnerAgent:
             if self.model.training:
                 decay_progress = max(
                     0.0, (self.current_lr - self.min_lr) / (self.base_lr - self.min_lr))
-                temperature = 0.1 + 1.5 * (decay_progress ** 2)
+                # [Fix] GRPOの収束向上のため、最小温度を下げ、減衰カーブを調整
+                temperature = 0.05 + 1.0 * (decay_progress ** 2)
             else:
-                temperature = 0.1
+                temperature = 0.01
 
-            probs = torch.softmax(logits / temperature, dim=1)
+            # [Fix] SNNの発火率(0~1)をソフトマックスに適したレンジにスケーリング
+            scaled_logits = logits * 20.0
+            probs = torch.softmax(scaled_logits / temperature, dim=1)
+            
             if torch.isnan(probs).any():
                 probs = torch.ones_like(probs) / self.output_size
 
