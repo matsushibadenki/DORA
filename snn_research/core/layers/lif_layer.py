@@ -3,6 +3,7 @@
 # 目的・内容:
 #   行列演算を用いた標準的なLIFレイヤーの実装。
 #   ループ処理による形状不一致エラーを解消。
+#   AbstractSNNLayerとの属性名衝突(KeyError)を修正。
 
 import torch
 import torch.nn as nn
@@ -20,7 +21,12 @@ class LIFLayer(AbstractSNNLayer):
     """
 
     def __init__(self, input_features: int = 784, neurons: int = 100, name: str = "lif", **kwargs):
-        super().__init__(name=name)
+        # 親クラスの初期化
+        super().__init__(
+            input_shape=(input_features,),
+            output_shape=(neurons,),
+            name=name
+        )
         self.input_features = input_features
         self._neurons = neurons # AbstractSNNLayerのneuronsプロパティと整合
         self.kwargs = kwargs
@@ -31,7 +37,12 @@ class LIFLayer(AbstractSNNLayer):
         self.b = nn.Parameter(torch.zeros(neurons))
         
         # 状態変数
-        self.v = None
+        # AbstractSNNLayerで self.membrane_potential = None とされているため、
+        # register_bufferでのKeyErrorを防ぐために一度削除する
+        if hasattr(self, 'membrane_potential'):
+            del self.membrane_potential
+
+        # bufferとして登録（state_dictに含まれるようになる）
         self.register_buffer('membrane_potential', torch.zeros(1, neurons))
 
         # ハイパーパラメータ
@@ -62,7 +73,8 @@ class LIFLayer(AbstractSNNLayer):
         batch_size = inputs.shape[0]
         
         # 状態の初期化確認
-        if self.membrane_potential.shape[0] != batch_size:
+        # mypyエラー回避のため None チェックを追加
+        if self.membrane_potential is None or self.membrane_potential.shape[0] != batch_size:
             self.membrane_potential = torch.zeros(
                 batch_size, self._neurons, device=inputs.device)
 

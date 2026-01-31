@@ -1,8 +1,7 @@
 # ファイルパス: tests/test_visual_cortex.py
-# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト v2.1
+# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト v2.2
 # 目的・内容: 
-#   視覚野のBitNet動作および時系列処理の検証。
-#   修正: リセットテスト時に model.eval() を適用し、ノイズの影響を排除。
+#   VisualCortexの形状不一致エラーを修正し、静止画・動画入力に対する動作を検証。
 
 import unittest
 import torch
@@ -12,13 +11,15 @@ class TestVisualCortex(unittest.TestCase):
     def setUp(self):
         # テスト用の設定
         self.in_channels = 3
-        self.base_channels = 16 # テスト用に小さく設定
+        self.base_channels = 16 
         self.time_steps = 5
         self.neuron_params = {"tau_mem": 20.0, "base_threshold": 1.0}
 
     def test_visual_cortex_static_image(self):
-        """静止画入力に対する視覚野の動作テスト"""
+        """静止画入力(32x32)に対する視覚野の動作テスト"""
+        # 入力画像サイズに合わせて input_shape を指定
         model = VisualCortex(
+            input_shape=(32, 32),
             in_channels=self.in_channels,
             base_channels=self.base_channels,
             time_steps=self.time_steps,
@@ -39,35 +40,36 @@ class TestVisualCortex(unittest.TestCase):
         self.assertEqual(output.shape[2], self.base_channels * 8)
 
     def test_visual_cortex_video_stream(self):
-        """動画ストリーム（時系列画像）に対する動作テスト"""
+        """動画ストリーム(32x32)に対する動作テスト"""
         model = VisualCortex(
+            input_shape=(32, 32),
             in_channels=1, # モノクロ動画
             base_channels=self.base_channels,
-            time_steps=self.time_steps, # 動画の長さが優先されるが、デフォルト値として渡す
+            time_steps=self.time_steps, 
             neuron_params=self.neuron_params
         )
         
         # (Batch, Time, Channel, H, W)
-        # Time=8 (モデルのデフォルト5より長い入力)
         x = torch.randn(2, 8, 1, 32, 32)
         
         output = model(x)
         
-        # 出力の時間次元が入力と一致することを確認
+        # 出力の時間次元が入力(8)と一致することを確認
         self.assertEqual(output.shape[1], 8)
         self.assertEqual(output.shape[0], 2)
 
     def test_reset(self):
-        """内部状態のリセット機能のテスト"""
+        """内部状態のリセット機能のテスト (入力サイズ 16x16)"""
+        # 入力画像サイズに合わせて input_shape を指定
         model = VisualCortex(
+            input_shape=(16, 16),
             in_channels=self.in_channels,
             base_channels=self.base_channels,
             time_steps=self.time_steps,
             neuron_params=self.neuron_params
         )
         
-        # [修正] 決定論的な動作を保証するために eval モードにする
-        # これにより、Dropoutやニューロンのノイズ注入が無効化される
+        # 決定論的な動作を保証
         model.eval()
         
         x = torch.randn(1, 3, 16, 16)
@@ -75,13 +77,13 @@ class TestVisualCortex(unittest.TestCase):
         # 1回目の実行
         out1 = model(x)
         
-        # リセットを手動で呼ぶ
+        # リセット
         model.reset_state()
         
         # 2回目の実行
         out2 = model(x)
         
-        # 出力が厳密に一致することを確認
+        # 出力が一致することを確認
         self.assertTrue(torch.allclose(out1, out2), "Output mismatch after reset in eval mode")
 
 if __name__ == "__main__":

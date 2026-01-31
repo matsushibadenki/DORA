@@ -4,6 +4,7 @@
 #   Fristonの自由エネルギー原理に基づく局所学習則。
 #   シナプス重みは「予測誤差」を最小化するように更新される。
 #   Delta W = - learning_rate * Prediction_Error * Pre_Activity
+#   修正: super().__init__() の呼び出しを追加し、AttributeErrorを解消。
 
 import torch
 import logging
@@ -31,6 +32,8 @@ class ActiveInferenceRule(PlasticityRule):
         learning_rate: float = 0.005,
         decay_rate: float = 0.01
     ):
+        # 修正: nn.Module の初期化を確実に行う
+        super().__init__()
         self.lr = learning_rate
         self.decay = decay_rate
 

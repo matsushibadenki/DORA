@@ -2,6 +2,7 @@
 # 日本語タイトル: Adaptive Leaky Integrate-and-Fire (ALIF) Neuron (Full Fix)
 # 目的・内容:
 #   プロパティ追加とサロゲート勾配の定義。
+#   Mypy型エラー修正のため型ヒントを追加。
 
 import torch
 import torch.nn as nn
@@ -56,6 +57,10 @@ class LIFNeuron(nn.Module):
         self.dt = dt
 
         # State tensors
+        # 型ヒントを明示してMypyエラーを解消
+        self.mem: Tensor
+        self.adap_thresh: Tensor
+
         self.register_buffer("mem", torch.zeros(1, features))
         self.register_buffer("adap_thresh", torch.zeros(1, features))
         
@@ -76,6 +81,7 @@ class LIFNeuron(nn.Module):
         batch_size = input_current.shape[0]
 
         # 状態の初期化または維持
+        # self.memの型ヒントがあるためMypyエラーは解消される
         if not self.is_stateful or self.mem.shape[0] != batch_size:
             self.mem = torch.full(
                 (batch_size, self.features), self.v_reset, device=input_current.device)

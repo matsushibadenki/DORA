@@ -1,21 +1,21 @@
 # ファイルパス: snn_research/models/bio/visual_cortex.py
-# 日本語タイトル: Bio-Inspired Visual Cortex Model (Refactored)
+# 日本語タイトル: Bio-Inspired Visual Cortex Model (Dynamic Shape Support)
 # 目的・内容:
 #   霊長類の視覚野（V1, V2, V4, IT）を模した階層型SNNモデル。
-#   各領野は局所的なLIFニューロン集団で構成され、フィードフォワード結合で繋がる。
+#   入力次元やチャネル数を動的に設定可能にし、時系列入力(Video)と静止画入力(Static)の両方に対応。
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
 from snn_research.core.base import BaseModel
 from snn_research.core.networks.sequential_snn_network import SequentialSNN
 from snn_research.core.layers.lif_layer import LIFLayer
-# PredictiveCodingLayerが必要な場合はインポートして使用可能
-# from snn_research.core.layers.predictive_coding import PredictiveCodingLayer
+import logging
 
+logger = logging.getLogger(__name__)
 
 class VisualCortex(BaseModel):
     """
@@ -25,32 +25,39 @@ class VisualCortex(BaseModel):
 
     def __init__(
         self,
-        input_shape: Tuple[int, int] = (28, 28), # MNISTサイズなど
-        layer_params: Optional[Dict[str, Any]] = None,
+        input_shape: Tuple[int, int] = (28, 28), 
+        in_channels: int = 1,
+        base_channels: int = 64, 
+        time_steps: int = 10,
+        neuron_params: Optional[Dict[str, Any]] = None,
         **kwargs: Any
     ) -> None:
         super().__init__()
         
-        params = layer_params or {}
-        # ニューロン数の設定 (V1は入力次元に合わせるなど)
-        flat_input_dim = input_shape[0] * input_shape[1]
+        self.time_steps = time_steps
+        self.input_shape = input_shape
+        self.in_channels = in_channels
         
-        v1_dim = params.get("V1", 512)
-        v2_dim = params.get("V2", 256)
-        v4_dim = params.get("V4", 128)
-        it_dim = params.get("IT", 64) # Inferotemporal Cortex (物体認識)
+        # 入力次元の計算 (H * W * C)
+        flat_input_dim = input_shape[0] * input_shape[1] * in_channels
+        
+        # 各層のニューロン数設定
+        v1_dim = base_channels * 2
+        v2_dim = base_channels * 4
+        v4_dim = base_channels * 6
+        it_dim = base_channels * 8 
 
-        # 共通のニューロン設定
+        # ニューロン設定
+        params = neuron_params or {}
         lif_config = {
             "decay": 0.9,
-            "threshold": 1.0,
+            "threshold": params.get("base_threshold", 1.0),
             "v_reset": 0.0,
-            # Configオブジェクトを渡すことも可能
-            # "learning_config": ... 
+            "tau_mem": params.get("tau_mem", 20.0)
         }
+        lif_config.update(kwargs.get("lif_config", {}))
 
         # 階層の構築
-        # SequentialSNNを使用して管理を簡略化
         self.pathway = SequentialSNN([
             # V1: エッジ検出・基本特徴
             LIFLayer(input_features=flat_input_dim, neurons=v1_dim, name="V1", **lif_config),
@@ -65,39 +72,65 @@ class VisualCortex(BaseModel):
             LIFLayer(input_features=v4_dim, neurons=it_dim, name="IT", **lif_config)
         ])
 
-        logger.info(f"👁️ VisualCortex initialized: Input({flat_input_dim}) -> V1({v1_dim}) -> V2({v2_dim}) -> V4({v4_dim}) -> IT({it_dim})")
+        logger.info(f"👁️ VisualCortex initialized: Input({flat_input_dim}) -> V1({v1_dim}) -> IT({it_dim})")
 
-    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         視覚処理の実行。
         Args:
-            x: 入力画像 [Batch, Channels, Height, Width] または [Batch, Features]
+            x: 
+              - Static Image: [Batch, Channels, Height, Width]
+              - Video: [Batch, Time, Channels, Height, Width]
         Returns:
-            Dict: 'output' (IT層の活動), 'layer_activities' (全層の活動)
+            torch.Tensor: [Batch, Time, Features] (IT層の活動)
         """
-        # 入力のフラット化
-        if x.dim() > 2:
-            batch_size = x.shape[0]
-            x_flat = x.view(batch_size, -1)
-        else:
-            x_flat = x
-
-        # SequentialSNNのforwardを実行
-        # activity だけが伝播していく
-        final_output = self.pathway(x_flat)
-
-        # 観測用データの収集（必要であれば）
-        # SequentialSNNは内部状態への直接アクセスを提供していないため、
-        # 詳細な解析が必要な場合は各レイヤーにフックを仕掛けるか、カスタムforwardを書く
+        batch_size = x.shape[0]
         
-        return {
-            "output": final_output,
-            # 将来的には各層のスパイク状態も含める
-            "activity_IT": final_output 
-        }
+        # 入力の形状確認と前処理
+        if x.dim() == 5:
+            # Video: [Batch, Time, C, H, W]
+            time_steps = x.shape[1]
+            # 各タイムステップごとにフラット化: [Batch, Time, Features]
+            x_flat = x.view(batch_size, time_steps, -1)
+            is_video = True
+        elif x.dim() == 4:
+            # Static Image: [Batch, C, H, W]
+            time_steps = self.time_steps
+            # フラット化して入力を用意: [Batch, Features]
+            input_flat = x.view(batch_size, -1)
+            x_flat = input_flat
+            is_video = False
+        else:
+            # 既にフラットなどの場合
+            if x.dim() == 2:
+                time_steps = self.time_steps
+                x_flat = x
+                is_video = False
+            elif x.dim() == 3:
+                time_steps = x.shape[1]
+                x_flat = x
+                is_video = True
+            else:
+                raise ValueError(f"Unsupported input shape: {x.shape}")
+
+        outputs = []
+        
+        # 時間方向のループ処理
+        for t in range(time_steps):
+            # 現在のタイムステップの入力を取得
+            if is_video:
+                current_input = x_flat[:, t, :]
+            else:
+                current_input = x_flat # Staticの場合は同じ入力を継続注入
+
+            # 順伝播
+            step_output = self.pathway(current_input)
+            outputs.append(step_output)
+
+        # 時間方向にスタック: [Batch, Time, Features]
+        output_stack = torch.stack(outputs, dim=1)
+        
+        return output_stack
 
     def reset_state(self) -> None:
         self.pathway.reset_state()
-
-import logging
-logger = logging.getLogger(__name__)
