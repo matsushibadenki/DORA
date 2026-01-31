@@ -1,106 +1,377 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 変更点:
-# - AstrocyteNetwork の統合 (エネルギー管理)
-# - SleepConsolidator の統合 (睡眠時の構造改革・剪定)
-# - get_brain_status でリアルな値を返すように修正
+# 日本語タイトル: Artificial Brain Integrated v16.8 (Robust Reset)
+# 目的・内容:
+#   - reset_state() を強化し、apply()を使って全サブモジュールの状態を強制リセット。
+#   - これによりSNNの計算グラフの肥大化（メモリリーク）を完全に防止する。
 
 import torch
 import torch.nn as nn
 import logging
-from typing import Dict, Any, Optional, cast, Union
+from typing import Dict, Any, Optional, Union, List
 
-# Phase 2 Components
+# --- Core Architectures ---
 from snn_research.core.networks.bio_pc_network import BioPCNetwork
+from snn_research.models.transformer.sformer import ScaleAndFireTransformer
+
+# --- Cognitive Components ---
+from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
+from snn_research.cognitive_architecture.prefrontal_cortex import PrefrontalCortex
+from snn_research.cognitive_architecture.basal_ganglia import BasalGanglia
+from snn_research.cognitive_architecture.intrinsic_motivation import (
+    IntrinsicMotivationSystem,
+)
+from snn_research.cognitive_architecture.rag_snn import RAGSystem
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
+from snn_research.cognitive_architecture.hippocampus import Hippocampus
+from snn_research.cognitive_architecture.motor_cortex import MotorCortex
 
-# Legacy/Alternative models
-from snn_research.models.transformer.sformer import ScaleAndFireTransformer 
+# Optional: High-level reasoning
+try:
+    from snn_research.cognitive_architecture.theory_of_mind import TheoryOfMind
+    from snn_research.cognitive_architecture.causal_inference_engine import (
+        CausalInferenceEngine,
+    )
+
+    ADVANCED_MODULES_AVAILABLE = True
+except ImportError:
+    ADVANCED_MODULES_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
+
 class ArtificialBrain(nn.Module):
     """
-    Artificial Brain v14.0 (Phase 2 Integrated)
-    
-    Responsibilities:
-    - Hosts the Core SNN (Bio-PCNet)
-    - Manages Energy (Astrocyte)
-    - Manages Structure (Sleep Consolidation)
+    Artificial Brain v16.8
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], device_name: Optional[str] = None):
         super().__init__()
         self.config = config
-        self.device = torch.device(config.get("device", "cpu"))
-        
+
+        # [Fix] Handle 'auto' device properly
+        target_device = device_name
+        if not target_device or target_device == "auto" or str(target_device) == "None":
+            # Try to get from config, default to None to check later
+            target_device = config.get("device")
+
+        # Check if resolution is needed (auto or None or "None")
+        if not target_device or target_device == "auto" or str(target_device) == "None":
+            if torch.cuda.is_available():
+                target_device = "cuda"
+            elif torch.backends.mps.is_available():
+                target_device = "mps"
+            else:
+                target_device = "cpu"
+
+        self.device = torch.device(target_device)
+
         self.is_awake = True
         self.plasticity_enabled = False
         self.sleep_cycle_count = 0
-        
-        # アーキテクチャの初期化
+        self.d_model = config.get("model", {}).get("d_model", 256)
+
+        # 1. 物理層
         self._init_core_brain()
-        
-        # 1. Astrocyte Network (Energy Management)
+
         self.astrocyte = AstrocyteNetwork(
-            max_energy=1000.0,
-            fatigue_threshold=80.0,
-            device=str(self.device)
+            max_energy=1000.0, fatigue_threshold=80.0, device=str(self.device)
         )
-        
-        # 2. Sleep Consolidator (Structural Plasticity)
-        self.sleep_manager = SleepConsolidator(
-            substrate=self.core
+
+        # 2. 認知層
+        self.workspace = GlobalWorkspace(
+            dim=self.d_model, decay=config.get("workspace_decay", 0.9)
         )
-        
-        # 互換性エイリアス
-        self.cortex = self 
-        
+
+        self.motivation_system = IntrinsicMotivationSystem(
+            curiosity_weight=config.get("curiosity_weight", 1.0), boredom_threshold=0.8
+        )
+
+        self.rag_system = RAGSystem(
+            embedding_dim=self.d_model,
+            vector_store_path=config.get("memory_path", "./runtime_state/memory"),
+        )
+
+        self.hippocampus = Hippocampus(
+            capacity=200,
+            input_dim=self.d_model if hasattr(self, "d_model") else 784,
+            device=str(self.device),
+        )
+
+        self.pfc = PrefrontalCortex(
+            workspace=self.workspace,
+            motivation_system=self.motivation_system,
+            d_model=self.d_model,
+            device=str(self.device),
+        )
+
+        self.basal_ganglia = BasalGanglia(
+            workspace=self.workspace, selection_threshold=0.4
+        )
+
+        self.motor_cortex = MotorCortex(
+            actuators=["default_actuator"], device=str(self.device)
+        )
+
+        self.theory_of_mind: Optional[TheoryOfMind] = None
+        self.causal_engine: Optional[CausalInferenceEngine] = None
+
+        if ADVANCED_MODULES_AVAILABLE and config.get("enable_advanced_cognition", True):
+            self.theory_of_mind = TheoryOfMind(self.workspace, self.rag_system)
+            self.causal_engine = CausalInferenceEngine(self.rag_system, self.workspace)
+
+        # 3. メンテナンス層
+        self.sleep_manager = SleepConsolidator(substrate=self.core)
+
+        logger.info(f"🚀 Artificial Brain v16.8 initialized on {self.device}.")
+
+    @property
+    def cycle_count(self) -> int:
+        return self.sleep_cycle_count
+
+    @property
+    def device_name(self) -> str:
+        return str(self.device)
+
+    def run_cycle(self, sensory_input: Any, phase: str = "wake") -> Dict[str, Any]:
+        """
+        Legacy wrapper for process_step.
+        """
+        return self.process_step(sensory_input)
+
     def _init_core_brain(self):
         model_conf = self.config.get("model", {})
         arch_type = model_conf.get("architecture_type", "sformer")
-        
-        logger.info(f"Initializing Artificial Brain with architecture: {arch_type}")
-        
+
         if arch_type == "bio_pc_network":
-            layer_sizes = model_conf.get("network", {}).get("layer_sizes", [784, 512, 256, 10])
-            self.core = BioPCNetwork(layer_sizes=layer_sizes, config=self.config)
+            layer_sizes = model_conf.get("network", {}).get(
+                "layer_sizes", [784, 512, 256, self.d_model]
+            )
+            # [Fix] input_shape is required
+            self.core = BioPCNetwork(
+                input_shape=(784,), layer_sizes=layer_sizes, config=self.config
+            )
         elif arch_type == "sformer":
             self.core = ScaleAndFireTransformer(
                 vocab_size=self.config.get("data", {}).get("vocab_size", 50257),
-                d_model=model_conf.get("d_model", 256),
-                num_layers=model_conf.get("num_layers", 6)
+                d_model=self.d_model,
+                num_layers=model_conf.get("num_layers", 6),
             )
         else:
-            logger.warning(f"Unknown architecture '{arch_type}', defaulting to BioPCNetwork")
-            self.core = BioPCNetwork(layer_sizes=[64, 128, 10], config=self.config)
-            
+            # Fallback default
+            self.core = BioPCNetwork(
+                input_shape=(784,),
+                layer_sizes=[64, 128, self.d_model],
+                config=self.config,
+            )
+
         self.core.to(self.device)
         self.thinking_engine = self.core
 
-    def forward(self, sensory_input: torch.Tensor) -> torch.Tensor:
-        """
-        Sensory Processing & Thought Generation
-        """
-        sensory_input = sensory_input.to(self.device)
-        
-        # エネルギーチェック
-        if self.astrocyte.current_energy <= 5.0:
-            logger.warning("Brain Energy Critically Low! Forcing low-power mode (No-Op).")
-            # 出力をゼロまたはノイズにして返す
-            return torch.zeros_like(sensory_input) # 次元が合うかは簡易処理
+    @property
+    def cortex(self):
+        return self
 
-        output = self.core(sensory_input)
-        
-        # 神経活動のモニタリングとエネルギー消費
-        firing_rate = 0.0
+    def get_all_knowledge(self) -> List[str]:
+        if hasattr(self.rag_system, "knowledge_base"):
+            return self.rag_system.knowledge_base
+        return []
+
+    # [Fix] 再帰的リセットの実装
+    def reset_state(self):
+        """
+        全モジュールの内部状態（電位、キャッシュ）をリセットし、計算グラフを切断する。
+        """
+
+        def _recursive_reset(module):
+            # 'reset_state' メソッドを持つ場合は呼び出す
+            if hasattr(module, "reset_state") and callable(module.reset_state):
+                module.reset_state()
+            # GlobalWorkspace等の 'reset' も呼び出す (ただし自分自身は除く)
+            elif (
+                hasattr(module, "reset")
+                and callable(module.reset)
+                and module is not self
+            ):
+                module.reset()
+
+        # Coreモデル内の全サブモジュールに適用
+        self.core.apply(_recursive_reset)
+
+        # ワークスペースのリセット
+        if hasattr(self.workspace, "reset"):
+            self.workspace.reset()
+
+        # 海馬のリセット
+        if hasattr(self.hippocampus, "reset_state"):
+            self.hippocampus.reset_state()
+
+        # デバイスキャッシュのクリア (メモリ断片化防止)
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        elif self.device.type == "mps":
+            torch.mps.empty_cache()
+
+    def process_step(
+        self, sensory_input: Union[torch.Tensor, str, Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        if not self.is_awake:
+            return {"status": "sleeping", "output": None}
+
+        if self.astrocyte.current_energy <= 5.0:
+            logger.warning("⚠️ Brain Energy Critically Low! Entering low-power mode.")
+            return {"status": "fatigued", "output": None}
+
+        perception_embedding = None
+        perception_content = {}
+        output_tensor = None
+
+        if isinstance(sensory_input, torch.Tensor):
+            sensory_input = sensory_input.to(self.device)
+            model_output = self.core(sensory_input)
+
+            if isinstance(model_output, tuple):
+                features = model_output[0]
+            elif isinstance(model_output, dict):
+                if "states" in model_output:
+                    features = model_output["states"]
+                elif "fused_representation" in model_output:
+                    features = model_output["fused_representation"]
+                elif "last_hidden_state" in model_output:
+                    features = model_output["last_hidden_state"]
+                else:
+                    # Fallback: take first tensor found
+                    features = next(
+                        (
+                            v
+                            for v in model_output.values()
+                            if isinstance(v, torch.Tensor)
+                        ),
+                        torch.zeros_like(sensory_input),
+                    )
+            else:
+                features = model_output
+
+            output_tensor = features
+            perception_embedding = features
+            perception_content = {"features": features, "modality": "visual"}
+
+            if hasattr(self, "hippocampus"):
+                if isinstance(features, torch.Tensor):
+                    self.hippocampus.store_episode(features.detach())
+
+        elif isinstance(sensory_input, str):
+            perception_content = {"text": sensory_input, "modality": "language"}
+            if (
+                self.rag_system.embeddings is not None
+                and len(self.rag_system.embeddings) > 0
+            ):
+                perception_embedding = self.rag_system._encode([sensory_input]).to(
+                    self.device
+                )
+                if perception_embedding.shape[-1] != self.d_model:
+                    perception_embedding = torch.nn.functional.pad(
+                        perception_embedding,
+                        (0, self.d_model - perception_embedding.shape[-1]),
+                    )
+                perception_content["features"] = perception_embedding
+                output_tensor = perception_embedding
+
+        if perception_embedding is not None:
+            self.workspace.upload_to_workspace(
+                source_name="sensory_cortex", content=perception_content, salience=0.8
+            )
+
+        self.workspace.step()
+        conscious_content = self.workspace.get_current_content()
+
+        surprise = 0.1
+        current_drives = self.motivation_system.process(
+            sensory_input, prediction_error=surprise
+        )
+
+        firing_rate = 0.1
         if hasattr(self.core, "get_mean_firing_rate"):
             firing_rate = self.core.get_mean_firing_rate()
-        
-        # アストロサイトへ通知 (代謝コスト発生)
         self.astrocyte.monitor_neural_activity(firing_rate)
-        
-        return output
+
+        pfc_plan = self.pfc.plan(conscious_content)
+        action_candidates = []
+        if pfc_plan:
+            action_candidates.append(
+                {
+                    "action": pfc_plan.get("directive", "wait"),
+                    "value": pfc_plan.get("priority", 0.5),
+                    "source": "pfc",
+                }
+            )
+
+        selected_action = self.basal_ganglia.select_action(
+            external_candidates=action_candidates, emotion_context=current_drives
+        )
+
+        return {
+            "output": output_tensor,
+            "perception": perception_content.get("text", "tensor_data"),
+            "conscious_broadcast": conscious_content,
+            "pfc_goal": self.pfc.current_goal,
+            "drives": current_drives,
+            "action": selected_action,
+            "energy": self.astrocyte.current_energy,
+            "executed_modules": [
+                "Core",
+                "GlobalWorkspace",
+                "PFC",
+                "BasalGanglia",
+                "MotorCortex",
+            ],
+        }
+
+    def run_cognitive_cycle(
+        self, text_or_input: Union[str, torch.Tensor]
+    ) -> Dict[str, Any]:
+        result = self.process_step(text_or_input)
+        return {
+            "output": result.get("output"),
+            "executed_modules": result.get("executed_modules", []),
+            "consciousness": str(
+                result.get("conscious_broadcast", {}).get("source", "None")
+            ),
+            "thought": str(text_or_input),
+        }
+
+    def sleep_cycle(self):
+        self.sleep()
+        self.wake_up()
+
+    def retrieve_knowledge(self, query: str) -> List[str]:
+        return self.rag_system.search(query)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        result = self.process_step(x)
+        out = result.get("output")
+        if out is None:
+            return torch.zeros(1, self.d_model, device=self.device)
+        return out
+
+    def sleep(self):
+        logger.info(">>> 💤 Sleep Cycle Initiated <<<")
+        self.is_awake = False
+        self.set_plasticity(False)
+        self.sleep_cycle_count += 1
+
+        self.reset_state()
+
+        self.astrocyte.replenish_energy(500.0)
+        self.astrocyte.clear_fatigue(50.0)
+
+        stats = self.sleep_manager.perform_maintenance(self.sleep_cycle_count)
+        logger.info(f"Sleep Maintenance: {stats}")
+
+    def wake_up(self):
+        logger.info(">>> 🌅 Wake Up <<<")
+        self.is_awake = True
+        self.set_plasticity(True)
 
     def set_plasticity(self, active: bool):
         self.plasticity_enabled = active
@@ -109,80 +380,20 @@ class ArtificialBrain(nn.Module):
         else:
             self.core.train(active)
 
-    def sleep(self):
-        """睡眠モード: エネルギー回復と記憶の整理"""
-        logger.info(">>> Sleep Cycle Initiated <<<")
-        self.is_awake = False
-        self.set_plasticity(False)
-        self.sleep_cycle_count += 1
-        
-        # 1. 内部状態のリセット
-        if hasattr(self.core, "reset_state"):
-            self.core.reset_state()
-            
-        # 2. エネルギー回復と疲労除去
-        self.astrocyte.replenish_energy(500.0) # 十分な量を回復
-        self.astrocyte.clear_fatigue(50.0)
-        
-        # 3. 構造的可塑性 (Synaptic Pruning / Genesis)
-        # 睡眠中に「刈り込み」を行うことで、脳回路を効率化する (Phase 2 Objective)
-        stats = self.sleep_manager.perform_maintenance(self.sleep_cycle_count)
-        if stats["pruned"] > 0 or stats["created"] > 0:
-            logger.info(f"Sleep Maintenance: Pruned={stats['pruned']}, Created={stats['created']} synapses")
-
-    def wake_up(self):
-        logger.info(">>> Wake Up <<<")
-        self.is_awake = True
-        self.set_plasticity(True)
-
-    def get_metrics(self) -> Dict[str, float]:
-        metrics = {}
-        if hasattr(self.core, "get_sparsity_loss"):
-            metrics["sparsity_loss"] = float(self.core.get_sparsity_loss().item())
-        
-        # アストロサイトの状態も含める
-        metrics["energy"] = self.astrocyte.current_energy
-        metrics["fatigue"] = self.astrocyte.fatigue
-        
-        return metrics
-
-    # --- Legacy API ---
-    def run_cognitive_cycle(self, text_or_input: Union[str, torch.Tensor]) -> Dict[str, Any]:
-        if isinstance(text_or_input, torch.Tensor):
-            out = self.forward(text_or_input)
-            return {"output": out, "executed_modules": ["Core"], "consciousness": "Active"}
-        
-        logger.info(f"Cognitive Cycle Input: {text_or_input}")
-        if isinstance(self.core, ScaleAndFireTransformer):
-            dummy_ids = torch.tensor([[ord(c) % 256 for c in str(text_or_input)[:10]]], dtype=torch.long, device=self.device)
-            out = self.core(dummy_ids)
-        else:
-            # BioPCNetwork用ダミー入力生成
-            in_size = 0
-            if hasattr(self.core, 'layer_sizes'):
-                in_size = self.core.layer_sizes[0]
-            elif hasattr(self.core, 'input_size'):
-                in_size = self.core.input_size
-            else:
-                in_size = 64
-                
-            dummy_tensor = torch.randn(1, in_size, device=self.device)
-            out = self.core(dummy_tensor)
-            
-        return {
-            "output": out,
-            "executed_modules": ["Core"],
-            "consciousness": "Active (Simulated)",
-            "thought": str(text_or_input)
-        }
-        
     def get_brain_status(self) -> Dict[str, Any]:
-        report = self.astrocyte.get_diagnosis_report()
-        return {
-            "astrocyte": report,
-            "state": "AWAKE" if self.is_awake else "SLEEPING"
-        }
+        current_thought = self.workspace.get_current_thought()
+        thought_str = (
+            str(current_thought.tolist())[:50]
+            if current_thought is not None
+            else "None"
+        )
 
-    def sleep_cycle(self):
-        self.sleep()
-        self.wake_up()
+        return {
+            "state": "AWAKE" if self.is_awake else "SLEEPING",
+            "cycle": self.sleep_cycle_count,
+            "energy": self.astrocyte.current_energy,
+            "fatigue": self.astrocyte.fatigue,
+            "current_goal": self.pfc.current_goal,
+            "drives": self.motivation_system.get_internal_state(),
+            "conscious_content": thought_str,
+        }

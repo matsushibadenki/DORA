@@ -1,173 +1,301 @@
-# scripts/demos/brain/run_concept_captioning.py
 # ファイルパス: scripts/demos/brain/run_concept_captioning.py
-# 日本語タイトル: 概念想起・キャプション生成デモ (Concept Retrieval / Image Captioning)
-# 機能説明: 画像を入力し、SNNの脳内にある「概念辞書（Bridge）」の中から、
-#           その画像に最もふさわしい概念（抽象タグ）を検索して出力する。
+# 日本語タイトル: Multimodal Concept Learning (Hybrid Loss)
+# 目的・内容:
+#   - Contrastive Loss に加えて、Auxiliary Classification Loss を導入。
+#   - モード崩壊を防ぎ、少量のデータ・小さいバッチサイズでも確実に概念を獲得させる。
+#   - データ数を 5000 に増加。
 
-import os
 import sys
-import torch
-import torch.nn.functional as F
+import time
 import logging
+import gc
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
+from pathlib import Path
+from tqdm import tqdm
 
-# プロジェクトルート設定
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../.."))
+# プロジェクトルートをパスに追加
+sys.path.append(str(Path(__file__).resolve().parents[3]))
 
-from snn_research.models.hybrid.concept_spikformer import ConceptSpikformer
-from snn_research.cognitive_architecture.neuro_symbolic_bridge import NeuroSymbolicBridge
-from snn_research.training.trainers.concept_augmented_trainer import ConceptAugmentedTrainer
-from snn_research.io.concept_dataset import ConceptAugmentedDataset, create_mnist_concepts
+from app.containers import AppContainer
+from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 
-# ログ設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ConceptCaptioning")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("ConceptLearning")
 
-def log(msg):
-    print(f"[Captioning] {msg}")
+TEXT_VOCAB = {
+    "zero": 1000, "one": 1001, "two": 1002, "three": 1003, "four": 1004,
+    "five": 1005, "six": 1006, "seven": 1007, "eight": 1008, "nine": 1009,
+    "digit": 1010, "[PAD]": 1011
+}
+IDX_TO_TEXT = {v: k for k, v in TEXT_VOCAB.items()}
 
-def get_device():
-    if torch.cuda.is_available(): return "cuda"
-    if torch.backends.mps.is_available(): return "mps"
-    return "cpu"
+def text_to_tokens(label_idx: int, device: torch.device) -> torch.Tensor:
+    digit_word = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"][label_idx]
+    tokens = [TEXT_VOCAB["digit"], TEXT_VOCAB[digit_word]]
+    return torch.tensor(tokens, device=device).unsqueeze(0)
 
-def train_brain(model, bridge, loader, device, epochs=3):
-    """思考能力獲得のための短期学習"""
-    trainer = ConceptAugmentedTrainer(
-        model=model, bridge=bridge, learning_rate=0.002, 
-        concept_loss_weight=2.0, # 概念結合を強く学習させる
-        device=device
-    )
-    
-    model.train()
-    for epoch in range(epochs):
+class ConceptTrainer:
+    def __init__(self, brain: ArtificialBrain, device: torch.device):
+        self.brain = brain
+        self.device = device
+        
+        self.brain.reset_state()
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, 10).long().to(device)
+            dummy_out = self.brain(dummy_input)
+            if dummy_out.dim() > 2:
+                actual_output_dim = dummy_out.shape[-1]
+            else:
+                actual_output_dim = dummy_out.shape[-1]
+        self.brain.reset_state()
+        
+        logger.info(f"🧠 Detected Brain Output Dimension: {actual_output_dim}")
+        
+        # Projection Heads
+        self.img_proj = nn.Linear(actual_output_dim, brain.d_model).to(device)
+        self.txt_proj = nn.Linear(actual_output_dim, brain.d_model).to(device)
+        
+        # [New] Auxiliary Classifier Head (共通の概念空間からクラス分類)
+        self.classifier = nn.Linear(brain.d_model, 10).to(device)
+        
+        self.temperature = nn.Parameter(torch.ones([]) * 0.07)
+        
+        self.optimizer = optim.Adam(
+            list(self.brain.parameters()) + 
+            list(self.img_proj.parameters()) + 
+            list(self.txt_proj.parameters()) + 
+            list(self.classifier.parameters()) +
+            [self.temperature],
+            lr=2e-4, # 少し上げる
+            weight_decay=1e-5
+        )
+        self.ce_loss = nn.CrossEntropyLoss()
+
+    def contrastive_loss(self, image_features, text_features):
+        image_features = F.normalize(image_features, dim=1)
+        text_features = F.normalize(text_features, dim=1)
+        
+        logits = (image_features @ text_features.T) / torch.clamp(self.temperature, min=0.01)
+        labels = torch.arange(logits.shape[0], device=self.device)
+        
+        loss_i2t = F.cross_entropy(logits, labels)
+        loss_t2i = F.cross_entropy(logits.T, labels)
+        
+        return (loss_i2t + loss_t2i) / 2
+
+    def train_epoch(self, train_loader: DataLoader, epoch: int):
+        self.brain.train()
+        self.img_proj.train()
+        self.txt_proj.train()
+        self.classifier.train()
+        
         total_loss = 0
-        for imgs, concepts_batch, labels in loader:
-            primary_concepts = list(concepts_batch[0])
-            loss_dict = trainer.train_step(imgs, primary_concepts, labels)
-            total_loss += loss_dict["total_loss"]
-        log(f"Training Epoch {epoch+1}/{epochs} | Loss: {total_loss/len(loader):.4f}")
-
-def generate_captions(model, bridge, test_loader, device, all_concepts_list):
-    """
-    画像を見て、脳内の全概念との類似度を計算し、上位の概念を出力する。
-    """
-    model.eval()
-    
-    # 全概念の埋め込みベクトルを事前に計算（辞書として機能）
-    log("Building Concept Dictionary in Neural Space...")
-    concept_library = {}
-    with torch.no_grad():
-        for concept in all_concepts_list:
-            # 概念文字列 -> スパイク/埋め込み
-            c_spike = bridge.symbol_to_spike(concept, batch_size=1).to(device)
-            # 概念野での表現に変換
-            c_rep = model.forward_conceptual(c_spike) # (1, Dim)
-            concept_library[concept] = c_rep
-
-    # 画像に対する推論
-    log("\n>>> Visual Thought Process (Image -> Concepts) <<<")
-    
-    # 最初の5バッチ分だけテスト
-    count = 0
-    with torch.no_grad():
-        for imgs, true_concepts_batch, labels in test_loader:
-            if count >= 5: break
-            imgs = imgs.to(device)
+        
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Hybrid Learning]")
+        for batch_idx, (images, labels) in enumerate(pbar):
+            self.brain.reset_state()
             
-            # 1. 視覚入力 -> 内部表現 (Bottom-up)
-            # model(imgs) を呼ぶと integrate(sensory, None) が走る
-            _ = model(imgs) 
-            # 内部状態（概念空間上の座標）を取得
-            visual_thoughts = model.get_internal_state() # (Batch, Dim)
+            images = images.to(self.device)
+            labels = labels.to(self.device)
+            batch_size = images.size(0)
             
-            # バッチ内の各画像について
-            for i in range(len(imgs)):
-                if count >= 5: break
+            # --- Image Path ---
+            img_tokens = (images.view(batch_size, -1) * 255).long()
+            img_tokens = torch.clamp(img_tokens, 0, 255)
+            
+            self.optimizer.zero_grad()
+            
+            img_out = self.brain(img_tokens)
+            if img_out.dim() > 2:
+                img_emb_raw = img_out.mean(dim=1)
+            else:
+                img_emb_raw = img_out
+            
+            img_emb = self.img_proj(img_emb_raw)
+            
+            # --- Text Path ---
+            txt_tokens_batch = torch.zeros((batch_size, 2), dtype=torch.long, device=self.device)
+            for i, lbl in enumerate(labels):
+                digit_word = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"][lbl.item()]
+                txt_tokens_batch[i, 0] = TEXT_VOCAB["digit"]
+                txt_tokens_batch[i, 1] = TEXT_VOCAB[digit_word]
+            
+            self.brain.reset_state()
+            txt_out = self.brain(txt_tokens_batch)
+            if txt_out.dim() > 2:
+                txt_emb_raw = txt_out.mean(dim=1)
+            else:
+                txt_emb_raw = txt_out
                 
-                label = labels[i].item()
-                thought_vec = visual_thoughts[i].unsqueeze(0) # (1, Dim)
-                
-                # 2. 概念検索 (Ranking)
-                # 思考ベクトルと全概念ベクトルの類似度を計算
-                scores = []
-                for c_text, c_vec in concept_library.items():
-                    # Cosine Similarity
-                    sim = F.cosine_similarity(thought_vec, c_vec).item()
-                    scores.append((c_text, sim))
-                
-                # スコア順にソート
-                scores.sort(key=lambda x: x[1], reverse=True)
-                top_3 = scores[:3]
-                
-                # 正解概念（データセット定義）
-                # true_concepts_batch は column-major なので、rowごとのリストにする必要あり
-                # ここでは簡易表示のため、concept_mapから再取得するか、デバッグ表示で済ませる
-                # データローダーの構造上、true_concepts_batch[0][i], true_concepts_batch[1][i]... となる
-                ground_truth = []
-                for col in true_concepts_batch:
-                    if i < len(col): ground_truth.append(col[i])
-                
-                # 結果表示
-                print(f"\n[Image: Digit {label}]")
-                print(f"  Ground Truth: {ground_truth}")
-                print(f"  Brain Thinks: {top_3}")
-                
-                # 考察: 
-                # もし Brain Thinks に正解タグが含まれていれば、
-                # モデルは「具体的な画素」から「抽象的な意味」への翻訳に成功している。
-                
-                count += 1
+            txt_emb = self.txt_proj(txt_emb_raw)
+            
+            # --- Loss Calculation (Hybrid) ---
+            # 1. Contrastive Loss (Alignment)
+            loss_clip = self.contrastive_loss(img_emb, txt_emb)
+            
+            # 2. Auxiliary Classification Loss (Meaning)
+            # 画像埋め込みからクラス予測
+            img_logits = self.classifier(img_emb)
+            loss_img_cls = self.ce_loss(img_logits, labels)
+            
+            # テキスト埋め込みからクラス予測
+            txt_logits = self.classifier(txt_emb)
+            loss_txt_cls = self.ce_loss(txt_logits, labels)
+            
+            # 合計損失
+            loss = loss_clip + (loss_img_cls + loss_txt_cls) * 0.5
+            
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item()
+            pbar.set_postfix({"Loss": f"{loss.item():.4f}", "CLIP": f"{loss_clip.item():.2f}"})
 
-def main():
-    device = get_device()
-    log(f"Using device: {device}")
+        gc.collect()
+        if self.device.type == 'mps':
+            torch.mps.empty_cache()
 
-    # 1. データセット準備
+        return total_loss / len(train_loader)
+
+    def encode_image(self, images):
+        self.brain.eval()
+        self.img_proj.eval()
+        with torch.no_grad():
+            self.brain.reset_state()
+            img_tokens = (images.view(images.size(0), -1) * 255).long()
+            out = self.brain(img_tokens)
+            if out.dim() > 2:
+                emb = out.mean(dim=1)
+            else:
+                emb = out
+            return self.img_proj(emb)
+
+    def encode_text(self, text_tokens):
+        self.brain.eval()
+        self.txt_proj.eval()
+        with torch.no_grad():
+            self.brain.reset_state()
+            out = self.brain(text_tokens)
+            if out.dim() > 2:
+                emb = out.mean(dim=1)
+            else:
+                emb = out
+            return self.txt_proj(emb)
+
+def run_concept_demo():
+    print("\n" + "="*60)
+    print("🧠 Phase 3: Multimodal Concept Learning (Hybrid Loss)")
+    print("="*60 + "\n")
+
+    container = AppContainer()
+    config_path = Path("configs/templates/base_config.yaml")
+    if not config_path.exists():
+        config_path = Path(__file__).resolve().parents[3] / "configs/templates/base_config.yaml"
+    container.config.from_yaml(str(config_path))
+    container.config.device.from_value("cpu")
+    
+    brain = container.artificial_brain()
+    device = brain.device
+    print(f"✅ Brain Initialized on {device}")
+    
     transform = transforms.Compose([
-        transforms.Resize((28, 28)),
+        transforms.Resize((14, 14)),
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
     ])
-    try:
-        mnist_data = datasets.MNIST('./data', train=True, download=True, transform=transform)
-        # 学習用: 3000枚
-        train_subset = Subset(mnist_data, range(3000))
-        # テスト用: 別の100枚
-        test_subset = Subset(mnist_data, range(3000, 3100))
-    except:
-        return
-
-    concept_map = create_mnist_concepts()
-    train_dataset = ConceptAugmentedDataset(train_subset, concept_map)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     
-    test_dataset = ConceptAugmentedDataset(test_subset, concept_map)
-    test_loader = DataLoader(test_dataset, batch_size=10, shuffle=True)
-
-    # 2. モデル構築
-    all_concepts = set()
-    for c_list in concept_map.values():
-        all_concepts.update(c_list)
-    all_concepts.add("unknown")
-    all_concepts_list = list(all_concepts)
+    # [Fix] データ量を5000に増加
+    full_dataset = datasets.MNIST('./data', train=True, download=True, transform=transform)
+    train_subset = torch.utils.data.Subset(full_dataset, range(5000))
+    # Batch 16 (Hybrid Loss helps stability, so we can try slightly larger batch if memory permits, otherwise keep 8)
+    train_loader = DataLoader(train_subset, batch_size=16, shuffle=True)
     
-    concept_dim = 128
-    bridge = NeuroSymbolicBridge(embed_dim=concept_dim, concepts=all_concepts_list).to(device)
+    test_dataset = datasets.MNIST('./data', train=False, transform=transform)
+    test_subset = torch.utils.data.Subset(test_dataset, range(100))
     
-    model = ConceptSpikformer(
-        img_size=28, patch_size=4, in_channels=1,
-        embed_dim=128, concept_dim=concept_dim,
-        num_classes=10
-    ).to(device)
+    trainer = ConceptTrainer(brain, device)
+    
+    # Epochs 5 (データが増えたので少なくて済む)
+    epochs = 5
+    print("\n📖 Learning Concepts (Binding Images <-> Text)...")
+    for epoch in range(1, epochs + 1):
+        loss = trainer.train_epoch(train_loader, epoch)
+        print(f"   Epoch {epoch}: Loss = {loss:.4f}")
+        brain.sleep_cycle()
 
-    # 3. 学習（概念獲得）
-    log("Learning concepts from images...")
-    train_brain(model, bridge, train_loader, device, epochs=3)
+    # --- Testing ---
+    print("\n🧪 Testing Concept Formation")
+    
+    # 1. Image-to-Text
+    print("\n[Test 1] Image-to-Text Retrieval")
+    
+    correct_retrieval = 0
+    total_test = 0
+    
+    candidate_texts = []
+    for i in range(10):
+        t = text_to_tokens(i, device)
+        candidate_texts.append(t)
+    
+    text_batch = torch.cat(candidate_texts, dim=0)
+    candidate_embs = trainer.encode_text(text_batch)
+    candidate_embs = F.normalize(candidate_embs, dim=1)
+        
+    for i in range(20):
+        img, lbl = test_subset[i]
+        img = img.to(device).unsqueeze(0)
+        
+        img_emb = trainer.encode_image(img)
+        img_emb = F.normalize(img_emb, dim=1)
+        
+        sims = img_emb @ candidate_embs.T
+        pred_idx = torch.argmax(sims).item()
+        
+        if i < 5:
+            pred_word = IDX_TO_TEXT[TEXT_VOCAB[["zero","one","two","three","four","five","six","seven","eight","nine"][pred_idx]]]
+            match_mark = "✅" if pred_idx == lbl else "❌"
+            print(f"   Image: [{lbl}] -> Brain thinks: '{pred_word}' {match_mark}")
+        
+        if pred_idx == lbl:
+            correct_retrieval += 1
+        total_test += 1
+            
+    print(f"   📊 Accuracy: {correct_retrieval}/{total_test} ({(correct_retrieval/total_test)*100:.1f}%)")
 
-    # 4. 推論（キャプション生成）
-    generate_captions(model, bridge, test_loader, device, all_concepts_list)
+    # 2. Text-to-Image
+    print("\n[Test 2] Text-to-Image Retrieval")
+    
+    query_label = 3
+    query_text = text_to_tokens(query_label, device)
+    q_emb = trainer.encode_text(query_text)
+    q_emb = F.normalize(q_emb, dim=1)
+    
+    pool_imgs = []
+    pool_labels = []
+    for i in range(50):
+        img, lbl = test_subset[i]
+        pool_imgs.append(img)
+        pool_labels.append(lbl)
+    
+    pool_imgs_tensor = torch.stack(pool_imgs).to(device)
+    pool_embs = trainer.encode_image(pool_imgs_tensor)
+    pool_embs = F.normalize(pool_embs, dim=1)
+    
+    sims = q_emb @ pool_embs.T
+    topk_vals, topk_idxs = torch.topk(sims, k=3)
+    
+    print(f"   Query: 'digit {['zero','one','two','three'][query_label]}'")
+    print("   Top 3 retrieved images:")
+    for rank, idx in enumerate(topk_idxs[0]):
+        retrieved_lbl = pool_labels[idx.item()]
+        mark = "✅" if retrieved_lbl == query_label else "❌"
+        print(f"     {rank+1}. Image of [{retrieved_lbl}] (Sim: {topk_vals[0][rank]:.3f}) {mark}")
+
+    print("\n✅ Multimodal Concept Demonstration Completed.")
 
 if __name__ == "__main__":
-    main()
+    run_concept_demo()

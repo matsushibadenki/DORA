@@ -1,240 +1,200 @@
 # ファイルパス: scripts/experiments/brain/run_phase2_mnist_challenge.py
+# 日本語タイトル: Phase 2 MNIST Challenge (Memory Safe)
+# 目的・内容:
+#   - メモリリーク対策（GC, Empty Cache）を強化した学習スクリプト。
+
 import sys
-import os
 import time
 import logging
+import gc
 import torch
-import torch.nn.functional as F
-from torchvision import datasets, transforms
+import torch.nn as nn
+import torch.optim as optim
 from torch.utils.data import DataLoader
-from typing import Optional, Dict, Any
-import numpy as np
+from torchvision import datasets, transforms
+from pathlib import Path
+from tqdm import tqdm
 
-# パス解決
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
+sys.path.append(str(Path(__file__).resolve().parents[3]))
 
-from snn_research.models.visual_cortex import VisualCortex as VisualCortexV2
+from app.containers import AppContainer
+from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("Phase2_MNIST")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("MNIST_Challenge")
 
-class MNISTOverlayProcessor:
-    """
-    画像にラベル情報を埋め込む（Supervised Forward-Forward用）
-    画像(784) + ワンホットラベル(10) = 794次元入力
-    """
-    def __init__(self, device):
+class MNISTTrainer:
+    def __init__(self, brain: ArtificialBrain, device: torch.device):
+        self.brain = brain
         self.device = device
-
-    def overlay_label(self, x: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, 1, 28, 28) or (B, 784)
-        labels: (B,)
-        Returns: (B, 794)
-        """
-        x = x.view(x.size(0), -1).to(self.device)
-        labels = labels.to(self.device)
-
-        # 画像の正規化 (0-1 -> 0.0-1.0)
-        x = x / (x.norm(p=2, dim=1, keepdim=True) + 1e-8)
-
-        # ワンホットラベルの生成
-        one_hot = F.one_hot(labels, num_classes=10).float()
-        # ラベル信号を少し強めにする（初期学習のガイド用）
-        one_hot = one_hot * 1.5 
-
-        # 結合
-        return torch.cat([x, one_hot], dim=1)
-
-def get_mnist_loaders(batch_size=64):
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-    
-    # データセットのダウンロード先を workspace/data に指定
-    data_path = "workspace/data"
-    os.makedirs(data_path, exist_ok=True)
-    
-    train_dataset = datasets.MNIST(data_path, train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST(data_path, train=False, download=True, transform=transform)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    
-    return train_loader, test_loader
-
-def evaluate(brain, test_loader, processor, device):
-    brain.eval() # 評価モード（ノイズなし）
-    correct = 0
-    total = 0
-    
-    logger.info("🔍 Evaluating...")
-    
-    # 評価は時間がかかるので最初の1000枚だけチェック
-    limit_samples = 1000
-    
-    with torch.no_grad():
-        for batch_idx, (data, target) in enumerate(test_loader):
-            if total >= limit_samples: break
+        
+        self.brain.reset_state()
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, 10).long().to(device)
+            dummy_output = self.brain(dummy_input)
             
-            data = data.to(device)
-            target = target.to(device)
-            batch_size = data.size(0)
-            
-            # 各クラスのラベルを埋め込んでGoodnessを計測
-            # (Batch, 10, 794) のテンソルを作って一括処理したいが、
-            # SNNの状態リセットが必要なため、シンプルにループで回す（精度優先）
-            
-            # 予測ラベル格納用
-            batch_goodness = []
-            
-            for label_idx in range(10):
-                brain.reset_state()
+            if dummy_output.dim() > 2:
+                input_dim = dummy_output.shape[-1]
+            else:
+                input_dim = dummy_output.shape[-1]
+        self.brain.reset_state()
                 
-                # 全員に同じ label_idx を埋め込む
-                dummy_labels = torch.full((batch_size,), label_idx, dtype=torch.long, device=device)
-                x_in = processor.overlay_label(data, dummy_labels)
-                
-                # 推論実行
-                brain(x_in, phase="inference")
-                stats = brain.get_goodness()
-                
-                # 全層のGoodnessを合算してスコアとする
-                # 特に深層(V3)の反応を重視
-                score = stats.get("V2_goodness", 0) + stats.get("V3_goodness", 0) * 2.0
-                batch_goodness.append(score)
-            
-            # batch_goodness: List of scalars (これはバッチ処理できていない簡易実装)
-            # 正しくはバッチ内の個々のサンプルごとのGoodnessを見る必要がある。
-            # SNNの current implementation の get_goodness() は mean() を返してしまうため、
-            # バッチサイズ=1 で評価するか、get_goodnessを改修する必要がある。
-            # 今回は「バッチサイズ=1」で正確に評価する形に変更する。
-            pass
+        logger.info(f"🧠 Detected Brain Output Dimension: {input_dim}")
 
-    # --- バッチサイズ1での正確な評価ループ ---
-    correct = 0
-    total = 0
-    
-    # テストローダーを再作成 (Batch=1)
-    test_loader_single = DataLoader(test_loader.dataset, batch_size=1, shuffle=True)
-    
-    with torch.no_grad():
-        for i, (data, target) in enumerate(test_loader_single):
-            if i >= 100: break # 時間短縮のため100枚で速報値を出す
-            
-            data = data.to(device)
-            target = target.item()
-            
-            best_goodness = -1.0
-            predicted_label = -1
-            
-            for label_c in range(10):
-                brain.reset_state()
-                
-                # 候補ラベルを埋め込む
-                lbl = torch.tensor([label_c], device=device)
-                x_in = processor.overlay_label(data, lbl)
-                
-                # 推論
-                brain(x_in, phase="inference")
-                
-                # Goodness取得 (Batch=1なのでスカラーでOK)
-                stats = brain.get_goodness()
-                g = stats.get("V2_goodness", 0) + stats.get("V3_goodness", 0)
-                
-                if g > best_goodness:
-                    best_goodness = g
-                    predicted_label = label_c
-            
-            if predicted_label == target:
-                correct += 1
-            total += 1
-            
-            if i % 20 == 0:
-                print(f".", end="", flush=True)
+        self.classifier_head = nn.Linear(input_dim, 10).to(device)
+        
+        self.optimizer = optim.Adam(
+            list(self.brain.parameters()) + list(self.classifier_head.parameters()), 
+            lr=5e-4, 
+            weight_decay=1e-4
+        )
+        self.criterion = nn.CrossEntropyLoss()
 
-    print()
-    acc = 100.0 * correct / total
-    return acc
+    def train_epoch(self, train_loader: DataLoader, epoch: int):
+        self.brain.train()
+        self.classifier_head.train()
+        
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        self.brain.wake_up()
+        
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]")
+        for batch_idx, (data, target) in enumerate(pbar):
+            # [Critical] バッチ毎に確実にリセット
+            self.brain.reset_state()
+            
+            data, target = data.to(self.device), target.to(self.device)
+            input_tokens = (data.view(data.size(0), -1) * 255).long()
+            input_tokens = torch.clamp(input_tokens, 0, 255)
+            
+            self.optimizer.zero_grad()
+            
+            features = self.brain(input_tokens)
+            
+            if features.dim() > 2:
+                features = features.mean(dim=1)
+                
+            output = self.classifier_head(features)
+            
+            loss = self.criterion(output, target)
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item()
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+            total += target.size(0)
+            
+            pbar.set_postfix({"Loss": f"{loss.item():.4f}", "Acc": f"{100. * correct / total:.2f}%"})
+
+        avg_loss = total_loss / len(train_loader)
+        accuracy = 100. * correct / total
+        logger.info(f"Epoch {epoch} Training Result: Loss={avg_loss:.4f}, Accuracy={accuracy:.2f}%")
+        
+        # [Memory] Epoch終了時のクリーンアップ
+        gc.collect()
+        if self.device.type == 'mps':
+            torch.mps.empty_cache()
+            
+        return avg_loss, accuracy
+
+    def evaluate(self, test_loader: DataLoader):
+        self.brain.eval()
+        self.classifier_head.eval()
+        
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for data, target in test_loader:
+                self.brain.reset_state()
+                
+                data, target = data.to(self.device), target.to(self.device)
+                input_tokens = (data.view(data.size(0), -1) * 255).long()
+                input_tokens = torch.clamp(input_tokens, 0, 255)
+                
+                features = self.brain(input_tokens)
+                if features.dim() > 2:
+                    features = features.mean(dim=1)
+                
+                output = self.classifier_head(features)
+                loss = self.criterion(output, target)
+                
+                total_loss += loss.item()
+                pred = output.argmax(dim=1, keepdim=True)
+                correct += pred.eq(target.view_as(pred)).sum().item()
+                total += target.size(0)
+
+        avg_loss = total_loss / len(test_loader)
+        accuracy = 100. * correct / total
+        logger.info(f"🧪 Evaluation Result: Loss={avg_loss:.4f}, Accuracy={accuracy:.2f}%")
+        return avg_loss, accuracy
 
 def run_mnist_challenge():
-    logger.info("🧠 Starting Phase 2 MNIST Challenge (Backprop FREE)")
+    print("\n" + "="*60)
+    print("🔥 Artificial Brain Phase 2: MNIST Challenge (Memory Safe)")
+    print("="*60 + "\n")
+
+    container = AppContainer()
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Device: {device}")
+    config_path = Path("configs/templates/base_config.yaml")
+    if not config_path.exists():
+        config_path = Path(__file__).resolve().parents[3] / "configs/templates/base_config.yaml"
+    container.config.from_yaml(str(config_path))
     
-    # 1. コンフィグ設定
-    # 入力次元 = 784(画像) + 10(ラベル) = 794
-    config = {
-        "input_dim": 794, 
-        "hidden_dim": 1500, # 容量を少し増やす
-        "num_layers": 3,
-        "dt": 1.0,
-        "tau_mem": 5.0,
-        "learning_rate": 0.08, # 学習率調整
-        "ff_threshold": 3.0,
-        "noise_level": 1.0
-    }
+    container.config.device.from_value("cpu")
     
-    # 2. モデルとデータの準備
-    brain = VisualCortexV2(device, config).to(device)
-    processor = MNISTOverlayProcessor(device)
-    train_loader, test_loader = get_mnist_loaders(batch_size=64)
+    brain = container.artificial_brain()
+    device = brain.device
     
-    logger.info(f"Brain Initialized. Input Dim: {config['input_dim']}")
+    print(f"✅ Brain Initialized on {device}")
     
-    # 3. 学習ループ
-    epochs = 2 # SNNなのでエポック数は少なめで様子見
+    transform = transforms.Compose([
+        transforms.Resize((14, 14)),
+        transforms.ToTensor(),
+    ])
+    
+    train_dataset = datasets.MNIST('./data', train=True, download=True, transform=transform)
+    test_dataset = datasets.MNIST('./data', train=False, transform=transform)
+    
+    train_subset = torch.utils.data.Subset(train_dataset, range(5000))
+    test_subset = torch.utils.data.Subset(test_dataset, range(1000))
+    
+    train_loader = DataLoader(train_subset, batch_size=16, shuffle=True)
+    test_loader = DataLoader(test_subset, batch_size=16, shuffle=False)
+    
+    print(f"📚 Data Loaded: Train={len(train_subset)}, Test={len(test_subset)} (Resized to 14x14)")
+
+    trainer = MNISTTrainer(brain, device)
+    
+    epochs = 5
+    history = {"train_acc": [], "test_acc": []}
+    
+    print("\n🚀 Starting Training Loop...")
+    start_time = time.time()
     
     for epoch in range(1, epochs + 1):
-        logger.info(f"Epoch {epoch}/{epochs} Start")
-        brain.train()
+        train_loss, train_acc = trainer.train_epoch(train_loader, epoch)
+        test_loss, test_acc = trainer.evaluate(test_loader)
         
-        start_time = time.time()
-        batch_count = 0
+        history["train_acc"].append(train_acc)
+        history["test_acc"].append(test_acc)
         
-        for batch_idx, (data, target) in enumerate(train_loader):
-            data = data.to(device)
-            target = target.to(device)
-            
-            # --- Positive Pass (Wake: 正解ラベル) ---
-            brain.reset_state()
-            x_pos = processor.overlay_label(data, target)
-            brain(x_pos, phase="wake")
-            
-            # --- Negative Pass (Sleep/Dream: 誤りラベル) ---
-            brain.reset_state()
-            # ランダムな誤りラベルを生成
-            rnd_labels = torch.randint(0, 10, target.shape, device=device)
-            # 正解と同じになってしまったものは +1 してずらす
-            rnd_labels = torch.where(rnd_labels == target, (rnd_labels + 1) % 10, rnd_labels)
-            
-            x_neg = processor.overlay_label(data, rnd_labels)
-            brain(x_neg, phase="sleep")
-            
-            batch_count += 1
-            if batch_count % 100 == 0:
-                metrics = brain.get_stability_metrics()
-                v1_rate = metrics.get("V1_firing_rate", 0)
-                v3_rate = metrics.get("V3_firing_rate", 0)
-                logger.info(f"  Batch {batch_count}: V1 Rate={v1_rate:.1%} V3 Rate={v3_rate:.1%}")
-
-        epoch_time = time.time() - start_time
-        logger.info(f"Epoch {epoch} Finished in {epoch_time:.1f}s")
+        brain.sleep_cycle()
         
-        # 4. 途中評価
-        acc = evaluate(brain, test_loader, processor, device)
-        logger.info(f"📊 Epoch {epoch} Test Accuracy: {acc:.2f}%")
-        
-        # 安定性チェック
-        if acc < 15.0 and epoch > 1:
-            logger.warning("⚠️ Accuracy is low. Learning might be unstable.")
+    total_time = time.time() - start_time
+    print(f"\n✨ Challenge Completed in {total_time:.1f}s")
+    print(f"🏆 Final Test Accuracy: {history['test_acc'][-1]:.2f}%")
     
-    # 最終レポート保存
-    with open("workspace/reports/mnist_result.txt", "w") as f:
-        f.write(f"MNIST Accuracy: {acc}%\n")
+    if history['test_acc'][-1] > 80.0:
+        print("🎉 SUCCESS: Brain successfully learned digit concepts!")
+    elif history['test_acc'][-1] > 50.0:
+        print("⚠️ PARTIAL SUCCESS: Learning observed, but optimization needed.")
+    else:
+        print("❌ FAILURE: Brain failed to generalize.")
 
 if __name__ == "__main__":
     run_mnist_challenge()

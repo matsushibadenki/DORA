@@ -13,7 +13,9 @@ from snn_research.cognitive_architecture.prefrontal_cortex import PrefrontalCort
 from snn_research.cognitive_architecture.hippocampus import Hippocampus
 from snn_research.cognitive_architecture.motor_cortex import MotorCortex
 from snn_research.cognitive_architecture.cortex import Cortex
-from snn_research.cognitive_architecture.intrinsic_motivation import IntrinsicMotivationSystem
+from snn_research.cognitive_architecture.intrinsic_motivation import (
+    IntrinsicMotivationSystem,
+)
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 
@@ -60,7 +62,9 @@ class AsyncEventBus:
                             else:
                                 callback(event)
                         except Exception as cb_err:
-                            logger.error(f"Error in subscriber callback for {event.type}: {cb_err}")
+                            logger.error(
+                                f"Error in subscriber callback for {event.type}: {cb_err}"
+                            )
 
                 self.queue.task_done()
             except asyncio.CancelledError:
@@ -96,7 +100,9 @@ class AsyncArtificialBrain:
                 pass
         logger.info("AsyncArtificialBrain stopped.")
 
-    async def _run_module(self, module_name: str, input_data: Any, output_event_type: str):
+    async def _run_module(
+        self, module_name: str, input_data: Any, output_event_type: str
+    ):
         """
         Execute a cognitive module with metabolic cost check.
         """
@@ -107,7 +113,9 @@ class AsyncArtificialBrain:
         if hasattr(self.astrocyte, "consume_energy"):
             energy_available = self.astrocyte.consume_energy(metabolic_cost)
             if not energy_available:
-                logger.warning(f"Metabolic limit reached. Skipping module: {module_name}")
+                logger.warning(
+                    f"Metabolic limit reached. Skipping module: {module_name}"
+                )
                 return
 
         if module_name in self.modules:
@@ -116,13 +124,13 @@ class AsyncArtificialBrain:
                 result = None
 
                 # Try different call patterns
-                if hasattr(module, 'forward'):
+                if hasattr(module, "forward"):
                     # Check if async
                     if asyncio.iscoroutinefunction(module.forward):
                         result = await module.forward(input_data)
                     else:
                         result = module.forward(input_data)
-                elif hasattr(module, '__call__'):
+                elif hasattr(module, "__call__"):
                     if asyncio.iscoroutinefunction(module.__call__):
                         result = await module(input_data)
                     else:
@@ -131,8 +139,9 @@ class AsyncArtificialBrain:
                     logger.warning(f"Module {module_name} is not callable.")
                     return
 
-                event = BrainEvent(type=output_event_type,
-                                   source=module_name, payload=result)
+                event = BrainEvent(
+                    type=output_event_type, source=module_name, payload=result
+                )
                 await self.bus.publish(event)
             except Exception as e:
                 logger.error(f"Error running module {module_name}: {e}")
@@ -150,10 +159,9 @@ class AsyncArtificialBrain:
         External input entry point.
         """
         logger.debug(f"Brain received input type: {type(input_data)}")
-        
+
         # Publish generic sensory event
-        event = BrainEvent(type="SENSORY_INPUT",
-                           source="external", payload=input_data)
+        event = BrainEvent(type="SENSORY_INPUT", source="external", payload=input_data)
         await self.bus.publish(event)
 
         # Trigger Visual Cortex explicitly if available (Fast Path)
@@ -165,7 +173,7 @@ class ArtificialBrain:
     """
     Legacy synchronous Brain implementation for compatibility with existing tests.
     Combines basic cognitive modules: Cortex, PFC, Hippocampus, MotorCortex.
-    
+
     Refactored to respect data types and avoid 'str' casting of tensors.
     """
 
@@ -182,16 +190,16 @@ class ArtificialBrain:
         self.pfc = PrefrontalCortex(
             workspace=self.workspace,
             motivation_system=self.motivation_system,
-            d_model=256
+            d_model=256,
         )
 
         self.hippocampus = Hippocampus(
             capacity=100,
             input_dim=256,
-            device='cpu'  # Objective Constraint: GPU依存しない
+            device="cpu",  # Objective Constraint: GPU依存しない
         )
 
-        self.motor_cortex = MotorCortex(device='cpu')
+        self.motor_cortex = MotorCortex(device="cpu")
 
         self.cortex = Cortex()
 
@@ -200,15 +208,19 @@ class ArtificialBrain:
         # 3. Visual Cortex (Added for run_spatial_demo.py compatibility)
         # Import manually to avoid circular imports at top if any
         from snn_research.models.bio.visual_cortex import VisualCortex
+
         self.visual_cortex = VisualCortex()
 
     def image_transform(self, image):
         """Standard transform for demo compatibility"""
         from torchvision import transforms
-        transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-        ])
+
+        transform = transforms.Compose(
+            [
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+            ]
+        )
         return transform(image)
 
     def run_cognitive_cycle(self, sensory_input: Any):
@@ -227,9 +239,16 @@ class ArtificialBrain:
         perceived = sensory_input
 
         # 2. Workspace Broadcast
-        # Ensure workspace can handle the input type. 
+        # Ensure workspace can handle the input type.
         # If it's a raw image tensor, we might need encoding, but here we pass it through.
-        self.workspace.publish(perceived)
+        # self.workspace.publish(perceived) # [Fix] Use upload_to_workspace
+        self.workspace.upload_to_workspace(
+            source_name="sensory_input",
+            content={"features": perceived}
+            if isinstance(perceived, torch.Tensor)
+            else {"raw": perceived},
+            salience=0.8,
+        )
 
         # 3. PFC Planning
         plan = self.pfc.plan(perceived)
@@ -239,7 +258,7 @@ class ArtificialBrain:
             self.motor_cortex.generate_command(plan)
 
         # 5. Memory Consolidation (Mock)
-        if hasattr(self.hippocampus, 'store_episode'):
+        if hasattr(self.hippocampus, "store_episode"):
             # Attempt to store the perceived event.
             # If perceived is a complex object, we fallback to a zero tensor for the legacy interface
             # unless it's a valid tensor.
@@ -280,5 +299,5 @@ class ArtificialBrain:
         return {
             "state": self.state,
             "energy": self.astrocyte.energy,
-            "fatigue": self.astrocyte.fatigue
+            "fatigue": self.astrocyte.fatigue,
         }

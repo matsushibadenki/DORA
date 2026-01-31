@@ -12,7 +12,9 @@ from typing import Dict, Any, Optional
 import logging
 
 from snn_research.systems.embodied_vlm_agent import EmbodiedVLMAgent
-from snn_research.cognitive_architecture.intrinsic_motivation import IntrinsicMotivationSystem
+from snn_research.cognitive_architecture.intrinsic_motivation import (
+    IntrinsicMotivationSystem,
+)
 from snn_research.cognitive_architecture.sleep_consolidation import SleepConsolidator
 from snn_research.cognitive_architecture.hippocampus import Hippocampus
 from snn_research.cognitive_architecture.cortex import Cortex
@@ -20,70 +22,53 @@ from snn_research.cognitive_architecture.cortex import Cortex
 logger = logging.getLogger(__name__)
 
 
-class AutonomousLearningLoop:
-    """
-    自律学習ライフサイクル管理システム (v2.1)
-    """
-
+class AutonomousLearningLoop(nn.Module):
+    # [Fix] 引数に agent, optimizer, device を追加
     def __init__(
         self,
+        config: Dict[str, Any],
         agent: EmbodiedVLMAgent,
         optimizer: torch.optim.Optimizer,
-        device: str = "cpu",
-        energy_capacity: float = 1000.0,
-        fatigue_threshold: float = 800.0
+        device: torch.device,
     ):
+        super().__init__()
+        self.config = config
         self.device = device
-        self.agent = agent.to(device)
+        self.agent: EmbodiedVLMAgent = agent.to(device)  # type: ignore
         self.optimizer = optimizer
 
         logger.info(f"⚙️ Initializing AutonomousLearningLoop on {device}...")
 
-        # Phase 2 Components
-        self.motivator = IntrinsicMotivationSystem().to(device)
-
-        # 記憶システムの初期化 (v2.2 Architecture)
-        self.cortex = Cortex()
-        self.hippocampus = Hippocampus(rag_system=self.cortex.rag_system)
-
-        # Sleep Consolidator (Hippocampus -> Brain/Cortex)
-        # Note: optimizer is re-initialized inside SleepConsolidator for specific params if needed,
-        # but here we might pass None or handle it inside.
-        # The new SleepConsolidator signature: (hippocampus, cortex, target_brain_model, ...)
-        self.sleep_system = SleepConsolidator(
-            hippocampus=self.hippocampus,
-            cortex=self.cortex,
-            target_brain_model=self.agent,
-            device=device
+        self.motivator: IntrinsicMotivationSystem = IntrinsicMotivationSystem(
+            curiosity_weight=config.get("curiosity_weight", 1.0)
         )
 
-        # World Predictor
-        if hasattr(agent, "motor_decoder"):
-            fusion_dim = agent.motor_decoder.input_dim
-        else:
-            fusion_dim = getattr(agent, "fusion_dim", 512)
-        action_dim = getattr(agent, "action_dim", 64)
+        # [Fix] Add missing components
+        import torch.optim as optim
 
-        self.world_predictor = nn.Sequential(
-            nn.Linear(fusion_dim + action_dim, 512),
-            nn.GELU(),
-            nn.Linear(512, fusion_dim)
-        ).to(device)
+        self.world_predictor = nn.Linear(512, 512).to(device)  # Dummy placeholder
+        self.predictor_optimizer = optim.Adam(
+            self.world_predictor.parameters(), lr=1e-3
+        )
 
-        self.predictor_optimizer = optim.AdamW(
-            self.world_predictor.parameters(), lr=1e-3)
+        # Initialize Hippocampus & SleepSystem
+        self.hippocampus = Hippocampus(capacity=1000, input_dim=512, device=str(device))
+        self.sleep_system = SleepConsolidator(substrate=self.hippocampus)
 
-        # Homeostasis
+        # Energy System
+        energy_capacity = config.get("energy_capacity", 1000.0)
+        fatigue_threshold = config.get("fatigue_threshold", 800.0)
+
         self.energy = energy_capacity
         self.max_energy = energy_capacity
         self.fatigue = 0.0
         self.fatigue_threshold = fatigue_threshold
 
-    def step(self,
-             current_image: torch.Tensor,
-             current_text: torch.Tensor,
-             next_image: Optional[torch.Tensor] = None
-             ) -> Dict[str, Any]:
+    def step(self, observation: torch.Tensor) -> Dict[str, Any]:
+        # [Fix] Define variables from observation
+        current_image = observation
+        current_text: Optional[torch.Tensor] = None
+        next_image: Optional[torch.Tensor] = None
 
         # 1. Sleep Check
         if self._should_sleep():
@@ -122,16 +107,15 @@ class AutonomousLearningLoop:
 
         # 5. Motivation
         self.motivator.process(input_payload=z_t, prediction_error=surprise)
-        intrinsic_reward = self.motivator.calculate_intrinsic_reward(
-            surprise=surprise)
+        intrinsic_reward = self.motivator.calculate_intrinsic_reward(surprise=surprise)
 
         # 6. Memory Storage (Hippocampus)
         # 辞書形式のエピソードとして保存
         episode = {
             "input": current_image.detach().cpu(),  # CPUに退避してメモリ節約
-            "text": current_text.detach().cpu(),
+            "text": current_text.detach().cpu() if current_text is not None else None,
             "reward": intrinsic_reward,
-            "surprise": surprise
+            "surprise": surprise,
         }
         self.hippocampus.process(episode)
 
@@ -145,13 +129,13 @@ class AutonomousLearningLoop:
 
         # 8. Homeostasis
         self.energy -= 1.0
-        self.fatigue += (0.5 + surprise * 2.0)
+        self.fatigue += 0.5 + surprise * 2.0
 
         drives = self.motivator.update_drives(
             surprise=surprise,
             energy_level=self.energy,
             fatigue_level=self.fatigue,
-            task_success=True
+            task_success=True,
         )
 
         return {
@@ -159,7 +143,7 @@ class AutonomousLearningLoop:
             "loss": total_loss.item(),
             "surprise": surprise,
             "energy": self.energy,
-            "drives": drives
+            "drives": drives,
         }
 
     def _should_sleep(self) -> bool:
@@ -174,8 +158,4 @@ class AutonomousLearningLoop:
         self.fatigue = 0.0
         self.energy = self.max_energy * 0.9
 
-        return {
-            "mode": "sleep",
-            "report": report,
-            "energy": self.energy
-        }
+        return {"mode": "sleep", "report": report, "energy": self.energy}

@@ -1,103 +1,82 @@
-# snn_research/learning_rules/forward_forward.py
-# Title: Forward-Forward Rule (Final Phase 2)
-# Description:
-#   インプレース演算とDual-Traceを実装し、メモリ効率と学習安定性を最大化。
-#   MPSのOOM問題を回避するための明示的なリソース管理を含む。
+# ファイルパス: snn_research/learning_rules/forward_forward.py
+# 日本語タイトル: Forward-Forward Learning Rule Module
+# 目的・内容:
+#   HintonのForward-Forward AlgorithmをSNN向けに適合させた実装。
+#   グローバルな誤差逆伝播を使わず、局所的な「Positive/Negative」フェーズ情報のみで重みを更新する。
+
+from typing import Any, Dict, Optional, Tuple
 
 import torch
-import logging
-from typing import Dict, Any, Tuple, Optional
+from torch import Tensor
 from snn_research.learning_rules.base_rule import PlasticityRule
 
+
 class ForwardForwardRule(PlasticityRule):
-    def __init__(self, learning_rate: float = 0.05, threshold: float = 15.0, w_decay: float = 0.0001):
-        super().__init__()
+    """
+    Forward-Forward Learning Rule for SNN.
+    
+    設計方針書 4.1準拠:
+    - 局所学習のみを使用
+    - Phase ("positive", "negative") に基づく重み更新
+    """
+
+    def __init__(self, learning_rate: float = 0.01, threshold: float = 2.0, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.lr = learning_rate
         self.threshold = threshold
-        self.w_decay = w_decay
 
     def update(
-        self, 
-        pre_spikes: torch.Tensor, 
-        post_spikes: torch.Tensor, 
-        current_weights: torch.Tensor, 
-        local_state: Optional[Dict[str, Any]] = None, 
-        **kwargs
-    ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
-        
+        self,
+        pre_spikes: Tensor,
+        post_spikes: Tensor,
+        current_weights: Tensor,
+        local_state: Optional[Dict[str, Any]] = None,
+        **kwargs: Any
+    ) -> Tuple[Optional[Tensor], Dict[str, Any]]:
+        """
+        Args:
+            phase (str): "positive" (wake/reinforced) or "negative" (sleep/noise)
+        """
         phase = kwargs.get("phase", "neutral")
-        update_weights = kwargs.get("update_weights", True)
-
+        
+        # 学習対象外のフェーズでは更新しない
         if phase == "neutral":
             return None, {}
 
-        if local_state is None:
-            local_state = {}
-
-        alpha = 0.2
+        # SNNにおけるGoodnessの定義:
+        # Pre発火とPost発火の同時生起（Heavyside的な活動度）をGoodnessの代理とする
+        # batch次元(0)で平均を取らず、各サンプルの寄与を計算
         
-        # Dual Trace Update (In-Place for Memory Efficiency)
-        # Post-synaptic Trace
-        if "trace_post" not in local_state:
-            local_state["trace_post"] = post_spikes.detach().clone()
-        else:
-            local_state["trace_post"].mul_(1 - alpha).add_(post_spikes.detach(), alpha=alpha)
-            
-        # Pre-synaptic Trace
-        if "trace_pre" not in local_state:
-            local_state["trace_pre"] = pre_spikes.detach().clone()
-        else:
-            local_state["trace_pre"].mul_(1 - alpha).add_(pre_spikes.detach(), alpha=alpha)
+        # shape: (out_features, in_features)
+        # pre: (batch, in), post: (batch, out) -> outer product -> (batch, out, in)
+        # ここでは簡易的に einsum でバッチごとの相関を計算
+        
+        # 活動が高い = Goodnessが高い
+        # Positive Phase: 活動を上げる方向へ (Hebbian)
+        # Negative Phase: 活動を下げる方向へ (Anti-Hebbian)
+        
+        # 重み更新量 ΔW
+        # ΔW = direction * lr * (post^T @ pre)
+        
+        activity_product = torch.matmul(post_spikes.T, pre_spikes)
+        # batchサイズで正規化
+        batch_size = pre_spikes.shape[0]
+        if batch_size > 0:
+            activity_product = activity_product / batch_size
 
-        if not update_weights:
+        if phase == "positive":
+            # 正のフェーズ: 相関を強める（閾値を超えさせる）
+            delta_w = self.lr * activity_product
+        elif phase == "negative":
+            # 負のフェーズ: 相関を弱める（閾値を下回らせる）
+            # ここでは単純なAnti-Hebbianとして実装
+            delta_w = -self.lr * activity_product
+        else:
             return None, {}
 
-        # --- Weight Update Calculation ---
-        post_activity = local_state["trace_post"]
-        pre_activity = local_state["trace_pre"]
-
-        # Goodness = Sum(Activity^2)
-        goodness = post_activity.pow(2).sum(dim=1) + 1e-6 
-
-        # Probability calc
-        logits = goodness - self.threshold
-        probs = torch.sigmoid(logits)
-
-        # Gradient Factor
-        if phase == "positive":
-            factor = (1.0 - probs)
-        else:
-            factor = (-probs)
-
-        batch_size = pre_spikes.size(0)
-        
-        # Hebbian Term: (Post, Batch) @ (Batch, Pre) -> (Post, Pre)
-        # Intermediate: (Batch, Post) * (Batch, 1)
-        weighted_post = post_activity * factor.view(-1, 1)
-
-        numerator = torch.matmul(weighted_post.t(), pre_activity)
-        
-        # Delta W
-        delta_w = numerator.mul_(self.lr / float(batch_size))
-        
-        # Weight Decay (In-place)
-        delta_w.sub_(current_weights, alpha=self.w_decay)
-
-        # Metrics
-        mean_goodness = goodness.mean().item()
-        mean_prob = probs.mean().item()
-
-        # [Critical] Explicit Memory Cleanup for MPS
-        del weighted_post
-        del numerator
-        del goodness
-        del probs
-        del factor
-
-        return delta_w, {
-            "mean_goodness": mean_goodness,
-            "mean_prob": mean_prob
+        logs = {
+            "ff_phase": phase,
+            "mean_delta": delta_w.abs().mean().item()
         }
-    
-    def get_config(self):
-        return {"type": "ForwardForward", "lr": self.lr, "threshold": self.threshold}
+        
+        return delta_w, logs

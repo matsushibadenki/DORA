@@ -49,7 +49,10 @@ def create_ui(container: AppContainer) -> gr.Blocks:
     Observer UIの構築関数。
     """
     chat_service = container.chat_service()
-    brain = container.brain()
+    chat_service = container.chat_service()
+    # brain = container.brain()
+    # [Fix] Use NeuromorphicOS for boot/run_cycle
+    os_sys = container.neuromorphic_os()
 
     with gr.Blocks(title="DORA: Neuromorphic Research OS") as demo:
         # --- Header ---
@@ -120,9 +123,13 @@ def create_ui(container: AppContainer) -> gr.Blocks:
 
                 # 3. 脳シミュレーションの実行 (1サイクル)
                 dummy_input = torch.randn(1, 784)
-                observation = brain.run_cycle(dummy_input)
+                # observation = brain.run_cycle(dummy_input)
+                observation = os_sys.run_cycle(dummy_input)
 
             except Exception as e:
+                import traceback
+
+                traceback.print_exc()
                 logger.error(f"Execution Error: {e}")
                 response_text = f"⚠️ SYSTEM ERROR: {e}"
                 status_txt = "ERROR"
@@ -183,7 +190,8 @@ def create_ui(container: AppContainer) -> gr.Blocks:
         def reset_system() -> Any:
             logger.info("System Reset Requested.")
             try:
-                brain.boot()
+                # brain.boot()
+                os_sys.boot()
             except Exception as e:
                 logger.error(f"Reset failed: {e}")
             # 初期状態を返す (historyは空リスト)
@@ -202,12 +210,25 @@ def main() -> None:
     """アプリケーションエントリーポイント"""
     logger.info("🔌 Wiring application container...")
     container = AppContainer()
+
+    # [Fix] Load configurations
+    import os
+
+    if os.path.exists("configs/templates/base_config.yaml"):
+        container.config.from_yaml("configs/templates/base_config.yaml")
+    if os.path.exists("configs/models/small.yaml"):
+        container.config.from_yaml("configs/models/small.yaml")
+
     container.wire(modules=[__name__])
 
     logger.info("🧠 Booting Neuromorphic OS...")
-    brain = container.brain()
+    logger.info("🧠 Booting Neuromorphic OS...")
+    # brain = container.brain()
+    # [Fix] Use NeuromorphicOS
+    os_sys = container.neuromorphic_os()
     try:
-        brain.boot()
+        # brain.boot()
+        os_sys.boot()
     except Exception as e:
         logger.error(f"Failed to boot brain: {e}")
 

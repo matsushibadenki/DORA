@@ -1,10 +1,6 @@
 # ファイルパス: tests/cognitive_architecture/test_cognitive_components.py
-# タイトル: 認知コンポーネント単体テスト (修正版)
-# 機能説明:
-# - 人工脳を構成する各モジュールが、個別に正しく機能することを確認する単体テスト。
-# - [Fix] Amygdala, Hippocampus等の初期化引数エラーを修正。
-# - [Fix] PFCのゴール期待値を最新の実装に合わせて修正。
-# - [Fix] Cortexのメソッド呼び出しエラーを修正。
+# タイトル: 認知コンポーネント単体テスト (修正版 v2)
+# 目的: PrefrontalCortexのAPI変更に伴うテストコードの修正。
 
 from snn_research.cognitive_architecture.intrinsic_motivation import IntrinsicMotivationSystem
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
@@ -45,11 +41,10 @@ def mock_motivation_system():
     mock.get_internal_state.return_value = {}
     return mock
 
-# --- Amygdala Tests (修正: processメソッドを使用) ---
+# --- Amygdala Tests ---
 
 
 def test_amygdala_evaluates_positive_emotion():
-    # [Fix] workspace引数を削除
     amygdala = Amygdala()
     result = amygdala.process("素晴らしい成功体験でした。")
 
@@ -74,8 +69,6 @@ def test_amygdala_handles_mixed_emotion():
     result = amygdala.process("失敗の中に喜びを見出す。")
 
     assert result is not None
-    # 混合感情なので、絶対値は小さくなる傾向、あるいは辞書の重み次第
-    # ここでは極端な値にならないことを確認
     assert -0.8 < result['valence'] < 0.8
     print("✅ Amygdala: 混合感情の評価テストに成功。")
 
@@ -184,24 +177,15 @@ def test_motor_cortex_handles_empty_commands():
 
 
 def test_memory_system_pipeline():
-    # [Fix] workspace引数を削除, capacity -> short_term_capacity
     hippocampus = Hippocampus(capacity=3)
     cortex = Cortex()
 
     # 1. 短期記憶へ保存
-    # {'source_input': 'A cat is a small animal.'}
     hippocampus.store_episode(torch.ones(1, 784))
-    # {'source_input': 'A dog is a friendly pet.'}
     hippocampus.store_episode(torch.ones(1, 784))
     assert len(hippocampus.episodic_buffer) == 2
 
     # 2. 長期記憶へ固定化
-    # Hippocampus.consolidate_memory は内部で RAGSystem に追加するが
-    # ここではテスト用に手動で連携を確認するか、Cortexを経由するか
-    # 元のテスト意図: "episodes_for_consolidation" を取得して Cortex に渡す
-    # 現行実装: consolidate_memory() メソッド内で完結している
-
-    # 簡易的にバッファから取り出して Cortex に渡すフローをテスト
     episode = hippocampus.episodic_buffer[0]
     concept = "animal_fact"
     definition = str(episode)
@@ -211,26 +195,22 @@ def test_memory_system_pipeline():
     # 3. 長期記憶から検索
     all_k = cortex.get_all_knowledge()
     assert len(all_k) > 0
-    # consolidate_memoryの実装によってはTripleとして保存される
     assert any("animal" in str(k) for k in all_k)
     print("✅ Hippocampus -> Cortex (記憶固定化) パイプラインのテストに成功。")
 
 
 def test_hippocampus_handles_empty_episode():
     """海馬が空のエピソードを保存しようとした場合のテスト。"""
-    # [Fix] workspace引数を削除
     hippocampus = Hippocampus(capacity=3)
     hippocampus.store_episode(torch.ones(784))
     assert len(hippocampus.episodic_buffer) == 1
-    # Recall functionality has been moved/changed.
     print("✅ Hippocampus: 空のエピソード保存テストに成功。")
 
 
 def test_hippocampus_stores_valid_pattern():
     """有効なパターン入力時にエピソード記憶が保存されるかテスト。"""
     hippocampus = Hippocampus(capacity=3)
-    # process メソッド関連のテストを store_episode に変更
-    dummy_input = torch.ones(784)  # sum > 0.1 ensure valid
+    dummy_input = torch.ones(784)
     hippocampus.store_episode(dummy_input)
     assert len(hippocampus.episodic_buffer) == 1
     print("✅ Hippocampus: パターン保存のテストに成功。")
@@ -239,15 +219,10 @@ def test_hippocampus_stores_valid_pattern():
 def test_cortex_handles_non_string_input():
     """大脳皮質が文字列でない入力のエピソードを処理しようとした場合のテスト。"""
     cortex = Cortex()
-    # [Fix] consolidate_memory は (concept, definition) を要求
     try:
         cortex.consolidate_memory("test_concept", 12345)  # type: ignore
     except Exception:
-        # エラーになってもよいが、ここでは実行できるか、あるいは型エラーが出るか
         pass
-
-    # 基本的にエラーなく完了するか、知識が増えているか
-    # RAGSystemの実装次第だが、ここでは落ちないことを確認
     assert True
     print("✅ Cortex: 予期せぬ入力型の処理テスト（エラーなし）に成功。")
 
@@ -255,16 +230,12 @@ def test_cortex_handles_non_string_input():
 def test_cortex_retrieves_nonexistent_concept():
     """大脳皮質が存在しない概念を検索した場合のテスト。"""
     cortex = Cortex()
-    # [Fix] retrieve_knowledge -> retrieve (ベクトル入力) or get_all_knowledge
-    # テスト意図: 文字列検索なら RAGSystem を直接叩くか、retrieve にダミーベクトルを渡す
     dummy_vec = torch.randn(128)
     results = cortex.retrieve(dummy_vec)
-    # 検索結果はリストで返る（ヒットしなければ空リストの可能性も）
     assert isinstance(results, list)
     print("✅ Cortex: 検索テストに成功。")
 
 # --- PrefrontalCortex Tests ---
-# [Fix] 期待値を最新の実装に合わせて修正
 
 
 @pytest.mark.parametrize("context, expected_keyword", [
@@ -282,21 +253,29 @@ def test_prefrontal_cortex_decides_goals(context, expected_keyword, mock_workspa
     # motivation_systemのモックが適切な内部状態を返すように設定
     mock_motivation_system.get_internal_state.return_value = context.get(
         "internal_state", {})
-    # [Fix] curiosity_context 属性を追加
     mock_motivation_system.curiosity_context = "unknown"
 
     pfc = PrefrontalCortex(workspace=mock_workspace,
                            motivation_system=mock_motivation_system)
 
-    # handle_conscious_broadcastを直接呼び出して目標決定をトリガー
-    # conscious_content や external_request を context から設定
+    # handle_conscious_broadcastの呼び出しを修正
     conscious_data = context.get("conscious_content", {})
     source = "receptor" if "external_request" in context else "internal"
+    
     if "external_request" in context:
-        conscious_data = context["external_request"]  # 簡易的に上書き
+        conscious_data = context["external_request"]
 
-    pfc.handle_conscious_broadcast(
-        source=source, conscious_data=conscious_data)
+    # Fix: sourceとcontentを1つの辞書にまとめる
+    broadcast_payload = {}
+    if isinstance(conscious_data, dict):
+        broadcast_payload = conscious_data.copy()
+    else:
+        broadcast_payload = {"content": conscious_data}
+    
+    broadcast_payload["source"] = source
+
+    pfc.handle_conscious_broadcast(broadcast_payload)
+    
     goal = pfc.current_goal
 
     assert expected_keyword in goal
@@ -309,8 +288,10 @@ def test_prefrontal_cortex_handles_empty_context(mock_workspace, mock_motivation
     mock_motivation_system.get_internal_state.return_value = {}
     pfc = PrefrontalCortex(workspace=mock_workspace,
                            motivation_system=mock_motivation_system)
-    pfc.handle_conscious_broadcast(source="unknown", conscious_data={})
+    
+    # Fix: 単一の辞書引数に変更
+    pfc.handle_conscious_broadcast({"source": "unknown"})
+    
     goal = pfc.current_goal
-    # [Fix] 初期ゴールが変わらないことを確認
     assert "Survive and Explore" in goal
     print("✅ PrefrontalCortex: 空コンテキストでの目標設定テストに成功。")
