@@ -1,208 +1,174 @@
-## 1. 設計思想の修正（最重要）
+# SNN Project Structure (最新版)
 
-### ❌ 現在の不整合点
-
-* 「AGI」「Brain v2.0」「完成形」という語彙が残っている
-* BPTT / Transformer / Mamba が **第一級学習機構**として書かれている
-* 「意識の実装」を最終目標にしている
-
-### ✅ 新しい一貫した立場
-
-**本プロジェクトは以下に再定義されるべきです：**
-
-> **SNNを用いた「局所学習・時間ダイナミクス・ハードウェア制約」の
-> 実験・比較・観測を行う Neuromorphic Research OS**
-
-#### 明示的に格下げされるもの
-
-* AGI完成宣言
-* 人間同等性能
-* LLM = 補助・観測・蒸留元
-
-#### 第一級市民
-
-* 時間
-* 局所学習
-* 可塑性
-* 崩壊・不安定性・相転移
+本ドキュメントは、Spiking Neural Network (SNN) 研究プロジェクトの最新のディレクトリ構造と各モジュールの役割を定義します。
 
 ---
 
-## 2. 文章設計の具体的修正指針
+## プロジェクト・アーキテクチャ概要
 
-### 2.1 プロジェクト概要（書き換え方針）
-
-**Before**
-
-> 次世代の汎用人工知能 (AGI) アーキテクチャ
-
-**After**
-
-> 脳型計算における学習則・時間ダイナミクス・ハードウェア制約を
-> 統一的に扱う **Neuromorphic Research OS**
-
----
-
-### 2.2 Brain v2.0 という呼称
-
-これは **削除または再定義** が必要です。
-
-#### 推奨
-
-* **Brain v2.0 → “Reference Cognitive Configuration”**
-* 「完成形」ではなく **1つの実験構成**
-
----
-
-### 2.3 Learning Rules の扱い（重要）
-
-#### 現状の問題
-
-* BPTT / Transformer が主
-* FF / STDP が補助
-
-#### 修正後
-
-* FF / STDP / Active Inference が **主役**
-* BPTT / Transformer / Mamba は
-
-  * 蒸留元
-  * 比較対象
-  * 構造生成器
-
----
-
-## 3. 設計変更後の Mermaid チャート（完全対応版）
-
-以下は **チャートのデータ入れ替え＋文章設計変更を完全反映**したものです。
-GitHub でそのまま使えます。
+本プロジェクトは、脳型計算（Neuromorphic Computing）をシミュレートするための階層型アーキテクチャを採用しており、大きく分けて「ライブラリ・コア」「実行レイヤー」「アプリケーション・インターフェース」の3層で構成されています。
 
 ```mermaid
 graph TD
-    %% =====================
-    %% Style Definitions
-    %% =====================
-    classDef env fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
-    classDef os fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000
-    classDef module fill:#ffffff,stroke:#1565c0,stroke-width:1px,color:#000
-    classDef learning fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
-    classDef substrate fill:#f1f8e9,stroke:#558b2f,stroke-width:2px,color:#000
-    classDef hardware fill:#eceff1,stroke:#37474f,stroke-width:2px,color:#000
-    classDef memory fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000
-    classDef ext fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
-
-    %% =====================
-    %% Environment
-    %% =====================
-    subgraph Environment["External Environment"]
-        Sensors["Sensory Input"]:::env
-        Actuators["Motor Output"]:::env
+    subgraph "Application & UI"
+        APP["app/ - Dashboard & LangChain"]
     end
 
-    %% =====================
-    %% Neuromorphic Research OS
-    %% =====================
-    subgraph NROS["Neuromorphic Research OS"]
-        direction TB
-
-        %% Observation Layer
-        subgraph Observation["Observation / Experiments"]
-            Log["Logging & Metrics"]:::os
-            Viz["Visualization"]:::os
-            Agent["Autonomous Agents"]:::os
-        end
-
-        %% Cognitive Phenomena (Not Algorithms)
-        subgraph Cognition["Cognitive Phenomena"]
-            GWT(("Global Workspace<br/>(Broadcast)")):::os
-            Control["Executive Control"]:::module
-            Valence["Valence / Emotion"]:::module
-            World["World Model"]:::module
-        end
-
-        %% Memory
-        subgraph Memory["Memory Systems"]
-            Episodic["Episodic / Short-term"]:::memory
-            Semantic["Semantic / Long-term"]:::memory
-        end
-
-        %% Learning Rules (First-class)
-        subgraph LearningRules["Local Learning Rules"]
-            FF["Forward-Forward"]:::learning
-            STDP["STDP / R-STDP"]:::learning
-            AI["Active Inference"]:::learning
-        end
-
-        %% Neural Substrate
-        subgraph Substrate["Spiking Neural Substrate"]
-            Neuron["Adaptive Neurons"]:::substrate
-            Synapse["Plastic Synapses"]:::substrate
-            Time["Explicit Time & State"]:::substrate
-        end
-
-        %% Hardware
-        subgraph Hardware["Hardware Abstraction"]
-            Loihi["Loihi-class Neuromorphic HW"]:::hardware
-        end
+    subgraph "Execution Layer Scripts"
+        EXP["scripts/experiments/ - Research Cycles"]
+        DEMO["scripts/demos/ - Visual/Social/Brain"]
+        TRAIN["scripts/training/ - Training/RL"]
+        OPT["scripts/optimization/ - HSEO/HPO"]
     end
 
-    %% =====================
-    %% External Systems
-    %% =====================
-    subgraph External["External (Non-core)"]
-        LLM["LLM (Teacher / Tool)"]:::ext
-        RAG["Knowledge DB"]:::ext
+    subgraph "Library Core snn_research"
+        COG["cognitive_architecture/ - Brain Components"]
+        OS["core/neuromorphic_os.py - System Kernel"]
+        MODELS["models/ - Bio/Transformer/Mamba"]
+        LR["learning_rules/ - STDP/PC/Hebbian"]
+        HW["hardware/ - Compiler/Simulator"]
+        IO["io/ - Spike Encoder/Decoder"]
     end
 
-    %% =====================
-    %% Flows
-    %% =====================
-    Sensors --> Neuron
-    Neuron --> Actuators
+    subgraph "Data & Configuration"
+        CFG["configs/ - YAML Configs"]
+        STATE["runtime_state/ - JSON/PNG States"]
+    end
 
-    Neuron --> Synapse
-    Synapse --> Time
-
-    FF -.-> Synapse
-    STDP -.-> Synapse
-    AI -.-> Neuron
-
-    Neuron --> GWT
-    GWT <--> Control
-    GWT <--> Valence
-    GWT <--> World
-
-    GWT --> Episodic
-    Episodic -- Consolidation --> Semantic
-    Semantic -. Retrieval .-> GWT
-
-    Substrate --> Log
-    LearningRules --> Log
-    GWT --> Viz
-
-    Substrate --> Loihi
-
-    Control <--> LLM
-    Semantic <--> RAG
+    CFG --> EXP
+    EXP --> COG
+    DEMO --> COG
+    COG --> MODELS
+    MODELS --> LR
+    COG --> OS
+    OS --> HW
+    IO --> COG
+    APP --> OS
 ```
 
 ---
 
-## 4. これで何が良くなったか
+## ディレクトリ詳細
 
-* **チャート・文章・ディレクトリ構造が一致**
-* AGI幻想を捨てたことで **研究として鋭くなった**
-* Loihi / Neuromorphic HW 前提が自然に入った
-* Forward-Forward が「正しい場所」に戻った
+### 1. `snn_research/` (コアライブラリ)
+
+プロジェクトの核となるロジック。脳の機能を模したモジュール群が含まれます。
+
+- **`cognitive_architecture/`**: 人工脳の構成要素（Hippocampus, Thalamus, Amygdala, Global Workspace等）
+- **`core/`**: 低レイヤのインフラ
+  - `neuromorphic_os.py`: スケジューリング、リソース管理、割り込み処理を担当
+  - `layers/`: LIF, DSA, BitSpike, Thermodynamic等の特殊レイヤ
+  - `networks/`: 基本的なネットワーク構成（Sequential, Bio-PC等）
+- **`models/`**: 具体的なモデルアーキテクチャ
+  - `bio/`: 生物学的に妥当なモデル
+  - `transformer/`: Spikformer, Spiking Transformer等
+  - `experimental/`: Mamba, Diffusion, MoEなどの最新研究
+- **`learning_rules/`**: 学習規則の定義（STDP, Predictive Coding, Forward-Forward等）
+- **`distillation/`**: 知識蒸留（Knowledge Distillation）の管理機能
+- **`evolution/`**: 構造的可塑性や再帰的な自己改善ロジック
+- **`hardware/`**: ハードウェアコンパイラ、イベント駆動シミュレータ、HDLテンプレート
+- **`io/`**: 感覚受容器（Sensory Receptor）とスパイク符号化・復号化
+
+### 2. `scripts/` (実行・研究レイヤー)
+
+ライブラリを使用して実験や訓練を行うためのスクリプト群。
+
+- **`experiments/`**: 特定の仮説検証（scal, systems, social, brain 等）
+- **`demos/`**: 視覚認知、社会性、脳機能などの統合デモ
+- **`training/`**: 学習実行スクリプト。`trainers/` 内に多様な学習戦略を保持
+- **`optimization/`**: HSEO（Hyper-parameter Search via Evolution）やOptunaによる最適化
+- **`visualization/`**: 脳活動のプロットや思考プロセスの可視化（Dashboard連携）
+
+### 3. `app/` (アプリケーション層)
+
+ユーザーインターフェースおよび外部連携。
+
+- **`dashboard.py`**: Streamlitベースのリアルタイム脳活動モニタリング
+- **`adapters/`**: LangChainアダプター等、外部LLMエコシステムとの連携
+
+### 4. `configs/` (設定ファイル)
+
+実験、モデル、検証ターゲットごとのYAML設定。
+
+- **`models/`**: 各モデルのパラメータ
+- **`experiments/`**: 実行シナリオの設定
 
 ---
 
-## 次にやるべきこと（重要度順）
+## データフロー
 
-1. **`Core Research` セクションから BPTT を第二級に格下げ**
-2. **Learning Rule Interface（共通API）の明文化**
-3. **「Brain v2.0」という語の全削除 or 再定義**
-4. **test-command をこの図にマッピングした表の作成**
+1. **感覚入力**: `snn_research/io` が外部データ（Image, Text, Signal）をスパイク列に変換
+2. **知覚処理**: `snn_research/core/layers` および `snn_research/models` がスパイクを処理
+3. **認知的統制**: `snn_research/core/neuromorphic_os` が各モジュールの実行タイミングと注意（Attention）を制御
+4. **学習・可塑性**: `snn_research/learning_rules` により実行中に重みや構造が変化
+5. **出力・行動**: `snn_research/io/actuator` がスパイクを外部コマンドやデータに復号
+6. **状態保存**: `runtime_state/` に現在の脳の状態や実験結果が保存される
 
-ここまでやると、このプロジェクトは
-**「巨大な実験場」から「世界的に珍しい神経OS研究基盤」** に変わります。
+---
+
+## ディレクトリツリー例
+
+```
+SNNproject/
+├── snn_research/
+│   ├── cognitive_architecture/
+│   │   ├── hippocampus.py
+│   │   ├── thalamus.py
+│   │   └── global_workspace.py
+│   ├── core/
+│   │   ├── neuromorphic_os.py
+│   │   ├── layers/
+│   │   └── networks/
+│   ├── models/
+│   │   ├── bio/
+│   │   ├── transformer/
+│   │   └── experimental/
+│   ├── learning_rules/
+│   ├── distillation/
+│   ├── evolution/
+│   ├── hardware/
+│   └── io/
+├── scripts/
+│   ├── experiments/
+│   ├── demos/
+│   ├── training/
+│   ├── optimization/
+│   └── visualization/
+├── app/
+│   ├── dashboard.py
+│   └── adapters/
+├── configs/
+│   ├── models/
+│   └── experiments/
+└── runtime_state/
+```
+
+---
+
+## 技術スタック
+
+- **フレームワーク**: PyTorch, SNNTorch
+- **可視化**: Streamlit, Matplotlib
+- **最適化**: Optuna
+- **言語モデル連携**: LangChain
+- **ハードウェア**: カスタムコンパイラ、イベント駆動シミュレータ
+
+---
+
+## 開発・実験ワークフロー
+
+1. **設定**: `configs/` でYAMLファイルを編集
+2. **実験実行**: `scripts/experiments/` または `scripts/training/` でスクリプトを実行
+3. **結果確認**: `app/dashboard.py` でリアルタイム監視
+4. **状態保存**: `runtime_state/` に自動保存
+5. **最適化**: `scripts/optimization/` でハイパーパラメータ調整
+
+---
+
+## ライセンス
+
+(プロジェクトのライセンス情報をここに記載)
+
+---
+
+**Contact**: (連絡先情報)
