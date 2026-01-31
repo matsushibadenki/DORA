@@ -1,6 +1,5 @@
-# ファイルパス: snn_research/core/ensemble_scal.py
-# タイトル: Ensemble SCAL v3.1 (Fix Type Hints)
-# 内容: forwardの戻り値の型ヒントを Dict[str, Any] に修正
+# snn_research/core/ensemble_scal.py
+# Title: Ensemble SCAL (Fix Imports)
 
 import torch
 import torch.nn as nn
@@ -11,7 +10,8 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
-from snn_research.core.layers.logic_gated_snn import PhaseCriticalSCAL
+# [Fix] Import from existing file and alias
+from snn_research.core.layers.logic_gated_snn import PhaseCriticalSCAL as SCALPerceptionLayer
 
 class EnsembleSCAL(nn.Module):
     def __init__(
@@ -117,7 +117,6 @@ class AdaptiveEnsembleSCAL(EnsembleSCAL):
         
         outputs_stacked = torch.stack(individual_outputs, dim=0)
         
-        # 学習可能な重みによる平均
         weights = F.softmax(self.model_weights, dim=0).unsqueeze(1).unsqueeze(2)
         ensemble_output = (outputs_stacked * weights).sum(dim=0)
         
@@ -131,9 +130,6 @@ class AdaptiveEnsembleSCAL(EnsembleSCAL):
         }
 
 class BootstrapEnsembleSCAL(nn.Module):
-    """
-    バギング的なアンサンブル
-    """
     def __init__(self, in_features, out_features, n_models=5, bootstrap_ratio=0.8):
         super().__init__()
         self.models = nn.ModuleList([

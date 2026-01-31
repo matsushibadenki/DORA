@@ -12,7 +12,7 @@ import numpy as np
 from pathlib import Path
 from typing import Tuple
 
-from snn_research.models.visual_cortex_v2 import VisualCortexV2
+from snn_research.models.visual_cortex import VisualCortex as VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("StabilityValidation")

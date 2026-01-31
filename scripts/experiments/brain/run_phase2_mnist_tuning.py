@@ -15,7 +15,7 @@ import math
 
 # プロジェクトルートをパスに追加
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
-from snn_research.models.visual_cortex_v2 import VisualCortexV2
+from snn_research.models.visual_cortex import VisualCortex as VisualCortexV2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
 logger = logging.getLogger("Phase2_MNIST_Rev87")

@@ -2,7 +2,7 @@
 # タイトル: SCAL v3.1 Training (Stabilized & Type Fixed)
 # 内容: ゲイン整合性とホメオスタシス制御を確認するトレーニング
 
-from snn_research.core.layers.logic_gated_snn_v2_1 import SCALPerceptionLayer
+from snn_research.core.layers.logic_gated_snn import PhaseCriticalSCAL as SCALPerceptionLayer
 from snn_research.core.ensemble_scal import AdaptiveEnsembleSCAL
 import sys
 import os

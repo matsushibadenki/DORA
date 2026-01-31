@@ -1,13 +1,11 @@
 # snn_research/core/snn_core.py
-# Title: Spiking Neural Substrate (Refactored Core)
-# Description: 
-#   プロジェクト全体の基盤となるSNNカーネル。
-#   旧API (SNNCore) との互換性を維持しつつ、型安全性を強化。
+# Title: Spiking Neural Substrate (Core)
+# Description: Mypy型安全性を強化し、未実装メソッドを追加した修正版
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, cast, Union
 
 import torch
 import torch.nn as nn
@@ -64,7 +62,7 @@ class SynapticProjection(nn.Module):
 
         return logs
     
-    def reset_state(self):
+    def reset_state(self) -> None:
         self.plasticity_state.clear()
 
 
@@ -89,6 +87,9 @@ class SpikingNeuralSubstrate(nn.Module):
         self.projections: nn.ModuleDict = nn.ModuleDict()
         self.topology: List[Dict[str, str]] = []
         self.prev_spikes: Dict[str, Optional[Tensor]] = {}
+        
+        # 統計用
+        self.total_spike_count: int = 0
 
         logger.info("⚡ SpikingNeuralSubstrate initialized.")
 
@@ -136,6 +137,31 @@ class SpikingNeuralSubstrate(nn.Module):
         self.projections[name] = projection.to(self.device)
         self.topology.append({"name": name, "src": source, "tgt": target})
 
+    def forward(self, x: Union[Tensor, Dict[str, Tensor]], **kwargs: Any) -> Tensor:
+        """
+        nn.Moduleの標準呼び出し。
+        入力がTensorの場合は最初のニューロン層への入力とみなす。
+        """
+        inputs: Dict[str, Tensor] = {}
+        if isinstance(x, dict):
+            inputs = x
+        elif torch.is_tensor(x):
+            # 入力層を自動推定 (Retina, Inputなど) または登録順の最初
+            input_names = [name for name in self.neuron_groups.keys() if "retina" in name.lower() or "input" in name.lower()]
+            target_layer = input_names[0] if input_names else list(self.neuron_groups.keys())[0]
+            inputs[target_layer] = x
+        else:
+            raise TypeError(f"Unsupported input type: {type(x)}")
+
+        results = self.forward_step(inputs, **kwargs)
+        
+        # エージェントが期待する出力形式 (Tensor) に合わせる
+        spikes = results["spikes"]
+        output_names = [name for name in spikes.keys() if "output" in name.lower() or "motor" in name.lower() or "readout" in name.lower()]
+        target_output = output_names[0] if output_names else list(spikes.keys())[-1]
+        
+        return spikes[target_output]
+
     def forward_step(
         self,
         external_inputs: Dict[str, Tensor],
@@ -154,13 +180,18 @@ class SpikingNeuralSubstrate(nn.Module):
         self._apply_plasticity(current_spikes, **kwargs)
         self.prev_spikes = cast(Dict[str, Optional[Tensor]], current_spikes)
 
+        # 統計更新
+        for s in current_spikes.values():
+            self.total_spike_count += int(s.sum().item())
+
         return {"spikes": current_spikes}
 
     def _initialize_prev_spikes_if_needed(self, batch_size: int) -> None:
         for name, group in self.neuron_groups.items():
-            if self.prev_spikes.get(name) is None or self.prev_spikes[name].shape[0] != batch_size:
+            prev = self.prev_spikes.get(name)
+            # mypyのための型絞り込み：prevがNoneでない場合のみshapeチェックを行う
+            if prev is None or prev.shape[0] != batch_size:
                 group_module = cast(Any, group)
-                # features属性の取得を安全に
                 num_neurons = int(getattr(group_module, 'features', getattr(group_module, 'out_features', 0)))
                 if num_neurons > 0:
                     self.prev_spikes[name] = torch.zeros(
@@ -176,10 +207,10 @@ class SpikingNeuralSubstrate(nn.Module):
             tgt_name = conn['tgt']
 
             proj_module = self.projections[proj_name]
-            # prev_spikesがNoneでないことを保証
             src_spikes_prev = self.prev_spikes.get(src_name)
+            
             if src_spikes_prev is None:
-                 continue # Skip if no previous spikes (first step or error)
+                 continue 
 
             synaptic_current = proj_module(src_spikes_prev)
 
@@ -239,22 +270,31 @@ class SpikingNeuralSubstrate(nn.Module):
 
     def reset_state(self) -> None:
         self.time_step = 0
+        self.total_spike_count = 0
         self.prev_spikes = {}
         for name, group in self.neuron_groups.items():
             if hasattr(group, 'reset'):
                 cast(Any, group).reset()
             self.prev_spikes[name] = None
         
-        # [Fix] Type Check for mypy: Explicitly check for reset_state method
         for proj in self.projections.values():
-            # SynapticProjectionであることを明示的にキャストまたはチェック
-            if isinstance(proj, SynapticProjection):
-                proj.reset_state()
-            elif hasattr(proj, 'reset_state'):
+            if hasattr(proj, 'reset_state'):
                 cast(Any, proj).reset_state()
 
         logger.info("🔄 Substrate state reset.")
+    
+    # --- Added missing methods referenced by Agent/Report scripts ---
+    def get_firing_rates(self) -> Dict[str, float]:
+        rates = {}
+        for name, spikes in self.prev_spikes.items():
+            if spikes is not None:
+                rates[name] = float(spikes.float().mean().item())
+            else:
+                rates[name] = 0.0
+        return rates
 
-# [Important] Backward Compatibility Alias
-# これにより、SNNCoreを参照している既存スクリプトのエラーを一括解消
+    def get_total_spikes(self) -> int:
+        return self.total_spike_count
+
+# Backward Compatibility Alias
 SNNCore = SpikingNeuralSubstrate

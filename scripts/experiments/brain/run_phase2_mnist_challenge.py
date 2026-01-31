@@ -13,7 +13,7 @@ import numpy as np
 # パス解決
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 
-from snn_research.models.visual_cortex_v2 import VisualCortexV2
+from snn_research.models.visual_cortex import VisualCortex as VisualCortexV2
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
