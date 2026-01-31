@@ -1,13 +1,11 @@
 # ファイルパス: app/main.py
-# 日本語タイトル: DORA Observer Dashboard (Gradio 4.20 Compatible)
+# 日本語タイトル: DORA Observer Dashboard (Gradio 6.0 Compatible)
 # 目的・内容:
 #   Neuromorphic Research OSの状態をリアルタイムで観測するためのWebインターフェース。
-#   Gradio 4.20.0 互換モードで動作するように修正。
+#   Gradio 6.0 互換モードで動作するように修正。
 
 import logging
-import os
-import sys
-from typing import Any, Dict, List, Union, Tuple, Optional
+from typing import Any, Dict, List
 
 import gradio as gr
 import torch
@@ -38,7 +36,7 @@ def deep_safe_convert(data: Any) -> Any:
             return [deep_safe_convert(x) for x in data.tolist()]
         except Exception:
             return str(data)
-    elif hasattr(data, 'item'):  # Numpy types
+    elif hasattr(data, "item"):  # Numpy types
         return data.item()
     elif isinstance(data, (float, int, str, bool, type(None))):
         return data
@@ -53,7 +51,7 @@ def create_ui(container: AppContainer) -> gr.Blocks:
     chat_service = container.chat_service()
     brain = container.brain()
 
-    with gr.Blocks(title="DORA: Neuromorphic Research OS", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="DORA: Neuromorphic Research OS") as demo:
         # --- Header ---
         gr.Markdown(
             """
@@ -66,14 +64,12 @@ def create_ui(container: AppContainer) -> gr.Blocks:
             # --- Left Column: Interaction ---
             with gr.Column(scale=2):
                 gr.Markdown("### 📡 Signal Injection & Conscious Stream")
-                
-                # Gradio 4.20 互換: type引数を削除し、標準のリスト形式を使用
+
+                # Gradio 6.0 互換: メッセージ形式(role/content辞書)を使用
                 chatbot = gr.Chatbot(
-                    label="Global Workspace Stream",
-                    height=500,
-                    show_label=True
+                    label="Global Workspace Stream", height=500, show_label=True
                 )
-                
+
                 with gr.Group():
                     msg = gr.Textbox(
                         label="Sensory Input",
@@ -103,19 +99,19 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                 with gr.Accordion("🕸️ Connectivity", open=False):
                     synapse_monitor = gr.Number(label="Active Synapses")
 
-        # Gradio 4.x: History is List[List[str | None]] (User, Bot) pairs
-        def bot_response(message: str, history: List[List[Optional[str]]]) -> Any:
+        # Gradio 6.0: History is List[Dict[str, str]] with 'role' and 'content' keys
+        def bot_response(message: str, history: List[Dict[str, str]]) -> Any:
             """
             ユーザー入力に対する応答処理と、脳状態の観測更新を行うコールバック。
             """
             # 履歴の初期化
             if history is None:
                 history = []
-            
+
             response_text = "..."
             observation: Dict[str, Any] = {}
             status_txt = "RUNNING"
-            
+
             try:
                 # 2. 会話エンジンの実行（思考プロセス）
                 if message:
@@ -125,23 +121,24 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                 # 3. 脳シミュレーションの実行 (1サイクル)
                 dummy_input = torch.randn(1, 784)
                 observation = brain.run_cycle(dummy_input)
-                    
+
             except Exception as e:
                 logger.error(f"Execution Error: {e}")
                 response_text = f"⚠️ SYSTEM ERROR: {e}"
                 status_txt = "ERROR"
                 observation = {}
 
-            # 4. Gradio 4.x 形式で履歴を追加: [UserMessage, BotMessage]
-            history.append([message, response_text])
+            # 4. Gradio 6.0 形式で履歴を追加: メッセージ辞書形式
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": response_text})
 
             # 5. データの安全な変換
             safe_observation = deep_safe_convert(observation)
-            
+
             cycle_val = safe_observation.get("cycle", 0)
             status_txt = str(safe_observation.get("status", status_txt))
             phase_txt = str(safe_observation.get("phase", "Wake"))
-            
+
             spikes_data = safe_observation.get("substrate_activity", {})
             bio_data = safe_observation.get("bio_metrics", {})
             synapse_val = safe_observation.get("synapse_count", 0)
@@ -153,7 +150,7 @@ def create_ui(container: AppContainer) -> gr.Blocks:
                 phase_txt,
                 spikes_data,
                 bio_data,
-                synapse_val
+                synapse_val,
             )
 
         # イベントハンドラの設定
@@ -164,7 +161,7 @@ def create_ui(container: AppContainer) -> gr.Blocks:
             phase_monitor,
             spikes_monitor,
             bio_monitor,
-            synapse_monitor
+            synapse_monitor,
         ]
 
         submit_btn.click(
@@ -216,11 +213,12 @@ def main() -> None:
 
     logger.info("🚀 Launching Research Observer...")
     demo = create_ui(container)
-    
+
     demo.queue().launch(
         server_name="127.0.0.1",
         share=False,
-        debug=True
+        debug=True,
+        theme=gr.themes.Soft(),  # Gradio 6.0: themeはlaunch()に移動
     )
 
 
