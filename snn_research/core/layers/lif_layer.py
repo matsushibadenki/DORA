@@ -1,134 +1,90 @@
 # ファイルパス: snn_research/core/layers/lif_layer.py
-# 日本語タイトル: LIF SNNレイヤー (No-BP / No-MatrixOp版 / Type-Safe)
-# 目的: 
-#   1. 誤差逆伝播法と行列演算ライブラリへの依存を排除。
-#   2. mypyエラー（learning_configの型不整合）を解消。
+# 日本語タイトル: Standard LIF Layer (Fixed)
+# 目的・内容:
+#   行列演算を用いた標準的なLIFレイヤーの実装。
+#   ループ処理による形状不一致エラーを解消。
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from typing import Dict, Optional, Any
 from torch import Tensor
-import math
-from typing import Dict, Any, Optional, cast
 
 from snn_research.core.layers.abstract_snn_layer import AbstractSNNLayer
-from snn_research.config.learning_config import BaseLearningConfig
 
 
 class LIFLayer(AbstractSNNLayer):
     """
-    LIF（Leaky Integrate-and-Fire）ニューロンレイヤー。
-    ポリシー遵守:
-    1. 誤差逆伝播法（Backprop）を使用しない (No Surrogate Gradient)。
-    2. 行列演算（matmul/linear）を使用しない (Element-wise / Loop)。
+    標準的なLIFニューロン層。
+    入力に対して線形変換(重み乗算)を行い、LIFニューロンに入力する。
     """
 
-    def __init__(self, input_features: int, neurons: int, **kwargs: Any) -> None:
-        # learning_config の取得と型変換
-        # デフォルトを {} ではなく None にし、辞書が来た場合はオブジェクト化する
-        raw_config = kwargs.get('learning_config')
-        learning_config: Optional[BaseLearningConfig] = None
+    def __init__(self, input_features: int = 784, neurons: int = 100, name: str = "lif", **kwargs):
+        super().__init__(name=name)
+        self.input_features = input_features
+        self._neurons = neurons # AbstractSNNLayerのneuronsプロパティと整合
+        self.kwargs = kwargs
         
-        if isinstance(raw_config, BaseLearningConfig):
-            learning_config = raw_config
-        elif isinstance(raw_config, dict):
-            # 辞書型の場合は BaseLearningConfig に変換
-            # 余分な引数によるエラーを防ぐため、learning_rateのみ抽出して渡す（必要に応じて拡張）
-            lr = raw_config.get('learning_rate', 0.01)
-            learning_config = BaseLearningConfig(learning_rate=lr)
-        else:
-            learning_config = None
+        # パラメータ定義
+        # nn.Linearを使用せず、重みを直接管理する場合
+        self.W = nn.Parameter(torch.randn(neurons, input_features) * 0.01)
+        self.b = nn.Parameter(torch.zeros(neurons))
+        
+        # 状態変数
+        self.v = None
+        self.register_buffer('membrane_potential', torch.zeros(1, neurons))
 
-        name = kwargs.get('name', 'LIFLayer')
-        super().__init__((input_features,), (neurons,), learning_config, name)
+        # ハイパーパラメータ
+        self.decay = kwargs.get("decay", 0.9)
+        self.threshold = kwargs.get("threshold", 1.0)
+        
+        self.built = True
 
-        self._input_features = input_features
-        self._neurons = neurons
-        self.decay = kwargs.get('decay', 0.9)
-        self.threshold = kwargs.get('threshold', 1.0)
-        self.v_reset = kwargs.get('v_reset', 0.0)
-
-        # 重みとバイアス
-        self.W = nn.Parameter(torch.empty(neurons, input_features))
-        self.b = nn.Parameter(torch.empty(neurons))
-
-        self.membrane_potential: Optional[Tensor] = None
-
-        # 統計用バッファ
-        self.register_buffer('total_spikes', torch.tensor(0.0))
-        self.register_buffer('total_steps', torch.tensor(0.0))
-
-        self.build()
+    @property
+    def neurons(self) -> int:
+        return self._neurons
 
     def build(self) -> None:
-        # 初期化（勾配計算不要）
-        with torch.no_grad():
-            nn.init.kaiming_uniform_(self.W, a=math.sqrt(5))
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.W)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            nn.init.uniform_(self.b, -bound, bound)
         self.built = True
 
     def reset_state(self) -> None:
-        self.membrane_potential = None
+        if self.membrane_potential is not None:
+            self.membrane_potential.fill_(0.0)
 
     def forward(self, inputs: Tensor, model_state: Optional[Dict[str, Tensor]] = None) -> Dict[str, Tensor]:
         """
         順伝播処理。
-        行列演算(F.linear)を使用せず、ニューロンごとのシナプス入力を計算する。
+        行列演算(F.linear)を使用してシナプス入力を計算する。
         """
         if not self.built:
             self.build()
 
-        # ポリシー: 勾配計算を絶対に行わない
-        with torch.no_grad():
-            batch_size = inputs.shape[0]
-
-            # シナプス入力の計算 (No Matrix Op implementation)
-            # 行列演算の代わりに、ニューロンごとに重み付き和を計算するループ処理
-            synaptic_input = torch.zeros(
+        batch_size = inputs.shape[0]
+        
+        # 状態の初期化確認
+        if self.membrane_potential.shape[0] != batch_size:
+            self.membrane_potential = torch.zeros(
                 batch_size, self._neurons, device=inputs.device)
 
-            # ニューロンごとの処理
-            for i in range(self._neurons):
-                # i番目のニューロンへの入力 = Σ(入力 * 重み) + バイアス
-                # inputs: [Batch, InFeatures]
-                # W[i]: [InFeatures]
-                weighted_sum = (inputs * self.W[i]).sum(dim=1)
-                synaptic_input[:, i] = weighted_sum + self.b[i]
+        # 1. シナプス入力 (Synaptic Input)
+        # I = W * x + b
+        # inputs: [Batch, InFeatures]
+        # W: [OutFeatures, InFeatures]
+        synaptic_input = F.linear(inputs, self.W, self.b)
 
-            # 膜電位の更新
-            if self.membrane_potential is None or self.membrane_potential.shape != synaptic_input.shape:
-                self.membrane_potential = torch.zeros_like(synaptic_input)
+        # 2. 膜電位更新 (Leaky Integration)
+        # v[t] = v[t-1] * decay + I[t]
+        self.membrane_potential = self.membrane_potential * self.decay + synaptic_input
 
-            self.membrane_potential = self.membrane_potential * self.decay + synaptic_input
+        # 3. 発火 (Spike Generation)
+        spikes = (self.membrane_potential >= self.threshold).float()
 
-            # 発火判定 (単純なStep関数)
-            # 代理勾配は使用しない
-            v_shifted = self.membrane_potential - self.threshold
-            spikes = (v_shifted > 0.0).float()
-
-            # リセット (Hard Reset)
-            self.membrane_potential = self.membrane_potential * \
-                (1.0 - spikes) + self.v_reset * spikes
-
-            # 統計更新
-            total_spikes = cast(Tensor, self.total_spikes)
-            total_steps = cast(Tensor, self.total_steps)
-            total_spikes += spikes.sum()
-            total_steps += float(batch_size)
+        # 4. リセット (Reset)
+        # Soft Reset: v = v - threshold
+        self.membrane_potential = self.membrane_potential - (spikes * self.threshold)
 
         return {
-            'activity': spikes,
-            'membrane_potential': self.membrane_potential
+            "spikes": spikes,
+            "activity": spikes, # 互換性のため
+            "membrane_potential": self.membrane_potential
         }
-
-    def get_firing_rate(self) -> float:
-        """平均発火率を取得する。"""
-        total_steps = cast(Tensor, self.total_steps)
-        total_spikes = cast(Tensor, self.total_spikes)
-
-        if total_steps.item() == 0:
-            return 0.0
-
-        rate = total_spikes / (total_steps * self._neurons)
-        return float(rate.item())

@@ -1,4 +1,8 @@
 # ファイルパス: snn_research/learning_rules/forward_forward.py
+# 日本語タイトル: Forward-Forward Learning Rule (Fixed)
+# 目的・内容:
+#   nn.Moduleの初期化漏れを修正。
+
 import torch
 import logging
 from typing import Dict, Any, Tuple, Optional
@@ -6,6 +10,9 @@ from snn_research.learning_rules.base_rule import PlasticityRule
 
 class ForwardForwardRule(PlasticityRule):
     def __init__(self, learning_rate: float = 0.05, threshold: float = 50.0, w_decay: float = 0.0001):
+        # 必須: 親クラス(nn.Moduleを含む)の初期化
+        super().__init__()
+        
         self.lr = learning_rate
         self.threshold = threshold
         self.w_decay = w_decay
@@ -24,12 +31,9 @@ class ForwardForwardRule(PlasticityRule):
         local_state["trace_post_rate"] = activity.detach()
 
         # Goodness = Sum(Activity^2)
-        # Using Sum to match the threshold scale
-        goodness = activity.pow(2).sum(dim=1) + 1e-6 # (Batch,)
+        goodness = activity.pow(2).sum(dim=1) + 1e-6 
 
         # Probability calc
-        # sigmoid( Goodness - Threshold )
-        # If G > T, prob -> 1. If G < T, prob -> 0.
         logits = goodness - self.threshold
         probs = torch.sigmoid(logits)
 
@@ -40,7 +44,7 @@ class ForwardForwardRule(PlasticityRule):
             factor = (-probs)      # Push G down
 
         batch_size = pre_spikes.size(0)
-        weighted_activity = activity * factor.unsqueeze(1) # (Batch, N_post)
+        weighted_activity = activity * factor.unsqueeze(1) 
 
         numerator = torch.matmul(weighted_activity.t(), pre_spikes)
         delta_w = (numerator / float(batch_size)) * self.lr

@@ -1,143 +1,103 @@
-# snn_research/models/bio/visual_cortex.py
 # ファイルパス: snn_research/models/bio/visual_cortex.py
-# 修正内容: mypy型エラー修正（Noneチェック、引数柔軟化）
+# 日本語タイトル: Bio-Inspired Visual Cortex Model (Refactored)
+# 目的・内容:
+#   霊長類の視覚野（V1, V2, V4, IT）を模した階層型SNNモデル。
+#   各領野は局所的なLIFニューロン集団で構成され、フィードフォワード結合で繋がる。
+
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 
-from snn_research.core.neurons import AdaptiveLIFNeuron
-from snn_research.core.layers.bit_spike_layer import BitSpikeConv2d
+from snn_research.core.base import BaseModel
+from snn_research.core.networks.sequential_snn_network import SequentialSNN
+from snn_research.core.layers.lif_layer import LIFLayer
+# PredictiveCodingLayerが必要な場合はインポートして使用可能
+# from snn_research.core.layers.predictive_coding import PredictiveCodingLayer
 
 
-class VisualCortexLayer(nn.Module):
+class VisualCortex(BaseModel):
     """
-    視覚野の単一層 (例: V1)。
-    SCAL -> BitNet Conv -> GroupNorm -> LIF
+    生物学的視覚野モデル。
+    Retina -> V1 -> V2 -> V4 -> IT の階層処理を行う。
     """
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int, neuron_params: Dict[str, Any]):
+    def __init__(
+        self,
+        input_shape: Tuple[int, int] = (28, 28), # MNISTサイズなど
+        layer_params: Optional[Dict[str, Any]] = None,
+        **kwargs: Any
+    ) -> None:
         super().__init__()
+        
+        params = layer_params or {}
+        # ニューロン数の設定 (V1は入力次元に合わせるなど)
+        flat_input_dim = input_shape[0] * input_shape[1]
+        
+        v1_dim = params.get("V1", 512)
+        v2_dim = params.get("V2", 256)
+        v4_dim = params.get("V4", 128)
+        it_dim = params.get("IT", 64) # Inferotemporal Cortex (物体認識)
 
-        padding = kernel_size // 2
-        self.conv = BitSpikeConv2d(
-            in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        # 共通のニューロン設定
+        lif_config = {
+            "decay": 0.9,
+            "threshold": 1.0,
+            "v_reset": 0.0,
+            # Configオブジェクトを渡すことも可能
+            # "learning_config": ... 
+        }
 
-        # BatchNorm はステートフルなので GroupNorm に変更
-        num_groups = 1
-        if out_channels >= 8 and out_channels % 8 == 0:
-            num_groups = 8
-        elif out_channels >= 4 and out_channels % 4 == 0:
-            num_groups = 4
-        elif out_channels >= 2 and out_channels % 2 == 0:
-            num_groups = 2
+        # 階層の構築
+        # SequentialSNNを使用して管理を簡略化
+        self.pathway = SequentialSNN([
+            # V1: エッジ検出・基本特徴
+            LIFLayer(input_features=flat_input_dim, neurons=v1_dim, name="V1", **lif_config),
+            
+            # V2: テクスチャ・複雑な形状
+            LIFLayer(input_features=v1_dim, neurons=v2_dim, name="V2", **lif_config),
+            
+            # V4: 物体部分・色
+            LIFLayer(input_features=v2_dim, neurons=v4_dim, name="V4", **lif_config),
+            
+            # IT: 物体全体・概念
+            LIFLayer(input_features=v4_dim, neurons=it_dim, name="IT", **lif_config)
+        ])
 
-        self.norm = nn.GroupNorm(num_groups, out_channels)
-        self.neuron = AdaptiveLIFNeuron(features=out_channels, **neuron_params)
+        logger.info(f"👁️ VisualCortex initialized: Input({flat_input_dim}) -> V1({v1_dim}) -> V2({v2_dim}) -> V4({v4_dim}) -> IT({it_dim})")
 
-        self.gate_proj = BitSpikeConv2d(
-            out_channels, out_channels, kernel_size=1)
-        self.gate_sigmoid = nn.Sigmoid()
-
-    def forward(self, x: torch.Tensor, top_down_signal: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # SCAL Bipolar Transform
-        x_bipolar = (x - 0.5) * 2.0
-
-        # Conv -> Norm
-        mem_pot = self.norm(self.conv(x_bipolar))
-
-        if top_down_signal is not None:
-            if top_down_signal.shape[-2:] != mem_pot.shape[-2:]:
-                top_down_signal = torch.nn.functional.interpolate(
-                    top_down_signal, size=mem_pot.shape[-2:], mode='nearest'
-                )
-            gate = self.gate_sigmoid(self.gate_proj(top_down_signal))
-            mem_pot = mem_pot * (1.0 + gate)
-
-        spikes, _ = self.neuron(mem_pot)
-        return spikes
-
-    def reset_state(self) -> None:
-        if hasattr(self.neuron, 'reset'):
-            self.neuron.reset()
-
-
-class VisualCortex(nn.Module):
-    """
-    階層的視覚野モデル (V1-V2-V4-IT)。
-    """
-
-    def __init__(self,
-                 in_channels: int = 3,
-                 base_channels: int = 32,
-                 time_steps: int = 16,
-                 neuron_params: Optional[Dict[str, Any]] = None,
-                 **kwargs: Any):
-        # mypy対策: 予期せぬ引数 (base_channelsなど) をkwargsで吸収
-        super().__init__()
-        if neuron_params is None:
-            neuron_params = {}
-
-        self.time_steps = time_steps
-        self.out_dim = base_channels * 8
-
-        self.v1 = VisualCortexLayer(
-            in_channels, base_channels, kernel_size=5, stride=1, neuron_params=neuron_params)
-        self.v2 = VisualCortexLayer(
-            base_channels, base_channels*2, kernel_size=3, stride=2, neuron_params=neuron_params)
-        self.v4 = VisualCortexLayer(
-            base_channels*2, base_channels*4, kernel_size=3, stride=2, neuron_params=neuron_params)
-        self.it = VisualCortexLayer(
-            base_channels*4, base_channels*8, kernel_size=3, stride=2, neuron_params=neuron_params)
-
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-
-    def reset_state(self) -> None:
-        self.v1.reset_state()
-        self.v2.reset_state()
-        self.v4.reset_state()
-        self.it.reset_state()
-
-    def forward_step(self, x: torch.Tensor, attention_map: Optional[torch.Tensor] = None) -> torch.Tensor:
-        s1 = self.v1(x)
-        s2 = self.v2(s1)
-        s4 = self.v4(s2, top_down_signal=attention_map)
-        sit = self.it(s4, top_down_signal=attention_map)
-        out = self.global_pool(sit).flatten(1)
-        return out
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self.reset_state()
-        outputs = []
-
-        if x.dim() == 4:
-            for t in range(self.time_steps):
-                out_t = self.forward_step(x)
-                outputs.append(out_t)
-        elif x.dim() == 5:
-            T = x.shape[1]
-            for t in range(T):
-                out_t = self.forward_step(x[:, t])
-                outputs.append(out_t)
+    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
+        """
+        視覚処理の実行。
+        Args:
+            x: 入力画像 [Batch, Channels, Height, Width] または [Batch, Features]
+        Returns:
+            Dict: 'output' (IT層の活動), 'layer_activities' (全層の活動)
+        """
+        # 入力のフラット化
+        if x.dim() > 2:
+            batch_size = x.shape[0]
+            x_flat = x.view(batch_size, -1)
         else:
-            raise ValueError(f"Unsupported input shape: {x.shape}")
+            x_flat = x
 
-        return torch.stack(outputs, dim=1)
+        # SequentialSNNのforwardを実行
+        # activity だけが伝播していく
+        final_output = self.pathway(x_flat)
 
-    def detect_objects(self, image_tensor: torch.Tensor) -> List[Dict[str, Any]]:
-        """
-        デモ用の簡易オブジェクト検出 (Mock/Heuristic)。
-        """
-        # 実際にはSNNでの検出は困難なため、デモ用にダミーまたは簡易的なヒューリスティックを返す
-        import random
-        objects = []
+        # 観測用データの収集（必要であれば）
+        # SequentialSNNは内部状態への直接アクセスを提供していないため、
+        # 詳細な解析が必要な場合は各レイヤーにフックを仕掛けるか、カスタムforwardを書く
+        
+        return {
+            "output": final_output,
+            # 将来的には各層のスパイク状態も含める
+            "activity_IT": final_output 
+        }
 
-        # ダミー検出結果
-        if random.random() > 0.1:  # 90% chance to detect
-            objects.append({
-                "label": "demo_object",
-                "bbox": [50, 50, 100, 100],  # x, y, w, h
-                "confidence": 0.95
-            })
+    def reset_state(self) -> None:
+        self.pathway.reset_state()
 
-        return objects
+import logging
+logger = logging.getLogger(__name__)

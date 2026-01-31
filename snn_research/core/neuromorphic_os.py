@@ -1,17 +1,16 @@
 # ファイルパス: snn_research/core/neuromorphic_os.py
-# 日本語タイトル: Neuromorphic Research OS Kernel v8.1 (Fix Reward)
+# 日本語タイトル: Neuromorphic Research OS Kernel v8.2 (Refactored)
 # 目的・内容:
-#   実験スクリプトが必要とする 'reward' メソッドを復元。
-#   Hippocampus, SleepConsolidator, ActiveInferenceを統合したバージョン。
+#   OSカーネルのリファクタリング。
+#   - HardwareAbstractionLayerの整理
+#   - PyTorch Moduleとしての振る舞いを改善
 
 import json
 import logging
 import os
-import os
 import time
-import random
 import asyncio
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -33,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 
 class HardwareAbstractionLayer:
+    """
+    ハードウェアリソース（CPU/GPU/MPS）の抽象化レイヤー。
+    将来的にNeuromorphic Chipへのインターフェースもここで吸収する。
+    """
     def __init__(self, request_device: Optional[str]):
         self.device = self._select_device(request_device)
         self.device_name = str(self.device)
@@ -41,7 +44,7 @@ class HardwareAbstractionLayer:
         if not device_name or device_name == "auto" or str(device_name).lower() == "none":
             if torch.cuda.is_available():
                 return torch.device("cuda")
-            elif torch.backends.mps.is_available():
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                 return torch.device("mps")
             else:
                 return torch.device("cpu")
@@ -54,7 +57,8 @@ class HardwareAbstractionLayer:
 
 class NeuromorphicOS(nn.Module):
     """
-    Neuromorphic Research OS (NROS) Kernel v8.1
+    Neuromorphic Research OS (NROS) Kernel.
+    脳型コンピューティングのための統合オペレーティングシステム。
     """
 
     def __init__(self, config: Dict[str, Any], device_name: Optional[str] = "auto"):
@@ -123,26 +127,24 @@ class NeuromorphicOS(nn.Module):
         self.substrate.add_neuron_group("Motor", output_dim)
 
         # Rules
+        # 各種学習則のインスタンス化
+        # リファクタリングによりパラメータ名やインターフェースが整合していることを確認
         ff_rule = ForwardForwardRule(learning_rate=0.01, threshold=2.0)
         stdp_rule = STDPRule(learning_rate=0.05)
         active_inf = ActiveInferenceRule(learning_rate=0.005)
 
         # Projections
-        # Bottom-up (FF)
         self.substrate.add_projection(
             "v1_to_assoc", "V1", "Association", plasticity_rule=ff_rule)
 
-        # Top-down (Active Inference / Prediction)
         self.substrate.add_projection(
             "assoc_to_v1", "Association", "V1", plasticity_rule=active_inf)
 
-        # Memory Loop (STDP)
         self.substrate.add_projection(
             "assoc_to_hippo", "Association", "Hippocampus", plasticity_rule=stdp_rule)
         self.substrate.add_projection(
             "hippo_to_assoc", "Hippocampus", "Association", plasticity_rule=stdp_rule)
 
-        # Action
         self.substrate.add_projection(
             "assoc_to_motor", "Association", "Motor", plasticity_rule=ff_rule)
 
@@ -158,14 +160,13 @@ class NeuromorphicOS(nn.Module):
         self.is_running = True
         logger.info("🚀 Neuromorphic OS Kernel started.")
 
-    # --- 修正: 削除されていたrewardメソッドを復元 ---
-    def reward(self, amount: float = 1.0):
-        """外部報酬シグナルの注入（ドーパミンレベルの上昇）"""
+    def reward(self, amount: float = 1.0) -> None:
+        """外部報酬シグナルの注入"""
         self.dopamine_level += amount
         self.dopamine_level = min(self.dopamine_level, 5.0)
-    # ---------------------------------------------
 
     def run_cycle(self, sensory_input: torch.Tensor, phase: str = "wake") -> Dict[str, Any]:
+        """1認知サイクルの実行"""
         self.cycle_count += 1
         current_input = sensory_input.to(self.hardware.device)
 
@@ -174,26 +175,22 @@ class NeuromorphicOS(nn.Module):
         self.dopamine_level = max(
             self.base_dopamine, self.dopamine_level * 0.95)
 
-        substrate_inputs = {}
+        substrate_inputs: Dict[str, torch.Tensor] = {}
         learning_phase = "neutral"
 
-        # 2. Phase Logic (Wake vs Sleep)
+        # 2. Phase Logic
         if phase == "wake":
-            # --- WAKE MODE ---
             substrate_inputs["V1"] = current_input
-
             if self.feedback_signal is not None:
                 substrate_inputs["Association"] = self.feedback_signal * 0.5
-
             self.hippocampus.store_episode(current_input)
-
+            
+            # ドーパミンレベルが高い場合、学習フェーズをPositiveに（強化）
             if self.dopamine_level > 0.5:
                 learning_phase = "positive"
 
         elif phase == "sleep":
-            # --- SLEEP MODE ---
-            maint_stats = self.sleep_manager.perform_maintenance(
-                self.cycle_count)
+            _ = self.sleep_manager.perform_maintenance(self.cycle_count)
             replay_signal = self.hippocampus.generate_replay(batch_size=1)
 
             if replay_signal is not None:
@@ -208,23 +205,25 @@ class NeuromorphicOS(nn.Module):
             self.astrocyte.clear_fatigue(5.0)
             self.feedback_signal = None
 
-        # 3. Neural Computation (Forward Step)
-        target = current_input if phase == "wake" else (
-            substrate_inputs.get("V1") if "V1" in substrate_inputs else None)
+        # 3. Neural Computation
+        target = current_input if phase == "wake" else substrate_inputs.get("V1")
 
+        # forward_step は辞書を返す
         substrate_state = self.substrate.forward_step(
             substrate_inputs,
             phase=learning_phase,
             target_signal=target
         )
 
+        # 発火統計の計算
+        spikes_dict = substrate_state.get("spikes", {})
         total_spikes = sum(
-            [s.sum().item() for s in substrate_state["spikes"].values() if s is not None])
-        self.astrocyte.monitor_neural_activity(
-            firing_rate=total_spikes * 0.001)
+            [s.sum().item() for s in spikes_dict.values() if s is not None]
+        )
+        self.astrocyte.monitor_neural_activity(firing_rate=total_spikes * 0.001)
 
-        # 4. Cognitive Processing (Global Workspace)
-        assoc_spikes = substrate_state["spikes"].get("Association")
+        # 4. Cognitive Processing
+        assoc_spikes = spikes_dict.get("Association")
         consciousness_level = 0.0
 
         if assoc_spikes is not None and phase == "wake":
@@ -236,7 +235,9 @@ class NeuromorphicOS(nn.Module):
             thought = self.global_workspace.get_current_thought()
             consciousness_level = float(thought.mean().item())
 
+            # 意識レベルが高い場合のみトップダウン信号を生成
             if consciousness_level > 0.01:
+                # 次元チェック
                 if thought.shape[-1] == assoc_spikes.shape[-1]:
                     self.feedback_signal = thought.detach()
             else:
@@ -260,35 +261,30 @@ class NeuromorphicOS(nn.Module):
                 count += int((p.abs() > 1e-6).sum().item())
         return count
 
-    def _pack_observation(self, phase, learning_phase, state, conscious_lvl, logs):
+    def _pack_observation(self, phase, learning_phase, state, conscious_lvl, logs) -> Dict[str, Any]:
         """観測データのパッケージング"""
+        spikes = state.get("spikes", {})
         activity = {k: float(v.mean().item())
-                    for k, v in state["spikes"].items() if v is not None}
+                    for k, v in spikes.items() if v is not None}
         bio = self.astrocyte.get_diagnosis_report()["metrics"]
 
-        # Visual Data Export (Downsampled or Full)
-        # V1 is 784 dim -> 28x28
+        # Visual Data Export
         input_vis = []
         recon_vis = []
 
-        # Get V1 activity if available
-        if "V1" in state["spikes"] and state["spikes"]["V1"] is not None:
-            # Take mean firing rate over batch/time or just instantaneous
-            # Here we assume state["spikes"]["V1"] is [Batch, Dim] or [Dim]
-            v1_state = state["spikes"]["V1"]
+        if "V1" in spikes and spikes["V1"] is not None:
+            v1_state = spikes["V1"]
             if v1_state.dim() > 1:
                 v1_state = v1_state.mean(dim=0)
             input_vis = v1_state.tolist()
 
-        # If there is a top-down signal or reconstruction
         if self.feedback_signal is not None:
             fb = self.feedback_signal
             if fb.dim() > 1:
                 fb = fb.mean(dim=0)
             recon_vis = fb.tolist()
-        elif "Association" in state["spikes"] and state["spikes"]["Association"] is not None:
-            # Fallback to Association activity if no direct feedback
-            assoc = state["spikes"]["Association"]
+        elif "Association" in spikes and spikes["Association"] is not None:
+            assoc = spikes["Association"]
             if assoc.dim() > 1:
                 assoc = assoc.mean(dim=0)
             recon_vis = assoc.tolist()
@@ -310,19 +306,16 @@ class NeuromorphicOS(nn.Module):
             "scheduler_log": [l["name"] for l in logs]
         }
 
-    def _export_state(self, data):
+    def _export_state(self, data: Dict[str, Any]) -> None:
         try:
             with open(self.state_file_path, "w") as f:
                 json.dump(data, f)
-        except:
+        except Exception:
             pass
 
-    def _export_dashboard_data(self, data: Dict[str, Any]):
-        """Research Dashboard用の詳細ログを出力"""
+    def _export_dashboard_data(self, data: Dict[str, Any]) -> None:
         dashboard_path = os.path.join(self.state_dir, "dashboard_data.json")
         try:
-            # 最新のデータを追記ではなく上書き（ダッシュボードがポーリングする想定）
-            # 履歴を残すならリストにするか別ファイルにするが、まずはCurrent State。
             with open(dashboard_path, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
@@ -333,27 +326,24 @@ class NeuromorphicOS(nn.Module):
         self._export_state({"status": "SHUTDOWN", "timestamp": time.time()})
         logger.info("💤 Neuromorphic OS shutting down.")
 
-    # Compatibility alias for torch.nn.Module / Trainers
+    # PyTorch Moduleとしての互換性
     def forward(self, x: torch.Tensor, phase: str = "wake", **kwargs: Any) -> Dict[str, Any]:
         return self.run_cycle(x, phase)
 
-    # --- Omega Point System Support ---
-    is_running: bool = False
-
-    async def sys_sleep(self, duration: float = 1.0):
+    async def sys_sleep(self, duration: float = 1.0) -> None:
         """
         System-wide sleep cycle trigger (Async).
-        Typically triggered by high fatigue or Omega Point controller.
         """
         logger.info(f"💤 SYS_SLEEP triggered for {duration}s...")
         self.system_status = "SLEEPING"
 
-        # Simulate sleep cycles
-        cycles = int(duration * 10)  # 10 cycles per second assumption
+        cycles = int(duration * 10)
+        # Dummy input for sleep cycle
+        dim = int(self.config.get("input_dim", 784))
+        
         for i in range(cycles):
-            self.run_cycle(torch.zeros(self.config.get(
-                "input_dim", 784)), phase="sleep")
-            await asyncio.sleep(0.1)  # Async yield
+            self.run_cycle(torch.zeros(dim), phase="sleep")
+            await asyncio.sleep(0.1)
 
         self.system_status = "RUNNING"
         logger.info("☀️ SYS_SLEEP complete. Waking up.")

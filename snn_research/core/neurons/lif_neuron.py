@@ -1,37 +1,50 @@
 # ファイルパス: snn_research/core/neurons/lif_neuron.py
-# 日本語タイトル: Adaptive Leaky Integrate-and-Fire (ALIF) Neuron
+# 日本語タイトル: Adaptive Leaky Integrate-and-Fire (ALIF) Neuron (Full Fix)
 # 目的・内容:
-#   Objective.md Phase 2 準拠の改良版ニューロン。
-#   適応的閾値（Adaptive Threshold）を導入し、発火率を自律的に抑制（<5%）する。
-#   これにより「エネルギー効率」と「表現のスパース性」を向上させる。
+#   プロパティ追加とサロゲート勾配の定義。
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any, Union
+from torch import Tensor
+
+
+class SurrogateHeaviside(torch.autograd.Function):
+    """
+    微分不可能なHeaviside関数のためのサロゲート勾配定義。
+    Backpropagation時にATan関数の勾配で近似する。
+    """
+
+    @staticmethod
+    def forward(ctx: Any, input_tensor: Tensor, alpha: float = 2.0) -> Tensor:
+        ctx.save_for_backward(input_tensor)
+        ctx.alpha = alpha
+        return (input_tensor > 0).float()
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: Tensor) -> Tuple[Tensor, None]:
+        (input_tensor,) = ctx.saved_tensors
+        alpha = ctx.alpha
+        # ATanの導関数による勾配近似
+        grad_input = grad_output * (1 / (1 + (alpha * input_tensor).pow(2)))
+        return grad_input, None
 
 
 class LIFNeuron(nn.Module):
     """
     Adaptive Leaky Integrate-and-Fire Neuron Model.
-    
-    Dynamics:
-        tau_mem * dV/dt = -(V - V_rest) + R * I
-        tau_adap * dTheta/dt = -Theta
-    
-    Trigger:
-        If V >= V_threshold + Theta -> Spike
-        Then V = V_reset, Theta = Theta + theta_plus
     """
 
     def __init__(
         self,
         features: int,
         tau_mem: float = 20.0,
-        tau_adap: float = 200.0,  # 適応閾値の時定数（膜電位より遅い）
+        tau_adap: float = 200.0,
         v_threshold: float = 1.0,
         v_reset: float = 0.0,
-        theta_plus: float = 0.5,  # 発火時に閾値をどれだけ上げるか
-        dt: float = 1.0
+        theta_plus: float = 0.5,
+        dt: float = 1.0,
+        trainable_tau: bool = False # 互換性引数
     ):
         super().__init__()
         self.features = features
@@ -42,16 +55,12 @@ class LIFNeuron(nn.Module):
         self.theta_plus = theta_plus
         self.dt = dt
 
-        # State 1: Membrane Potential
-        # register_buffer ensures it's part of state_dict but not a learnable parameter
-        self.mem: torch.Tensor  # mypyのために型を明示
+        # State tensors
         self.register_buffer("mem", torch.zeros(1, features))
-        
-        # State 2: Adaptive Threshold (Theta) - これによりスパース性を強制
-        self.adap_thresh: torch.Tensor  # mypyのために型を明示
         self.register_buffer("adap_thresh", torch.zeros(1, features))
         
         self.is_stateful = False
+        self.spike_fn = SurrogateHeaviside.apply
 
     def set_stateful(self, stateful: bool):
         self.is_stateful = stateful
@@ -64,13 +73,6 @@ class LIFNeuron(nn.Module):
             self.adap_thresh.fill_(0.0)
 
     def forward(self, input_current: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            input_current: (Batch, Features)
-        Returns:
-            spikes: (Batch, Features)
-            mem: (Batch, Features)
-        """
         batch_size = input_current.shape[0]
 
         # 状態の初期化または維持
@@ -80,37 +82,29 @@ class LIFNeuron(nn.Module):
             self.adap_thresh = torch.zeros(
                 (batch_size, self.features), device=input_current.device)
 
-        # --- 1. Membrane Potential Update (Euler Integration) ---
+        # Dynamics
         decay_mem = self.dt / self.tau_mem
-        # dV = (-(V - V_rest) + I) * (dt / tau)
         delta_v = (-(self.mem - self.v_reset) + input_current) * decay_mem
         self.mem = self.mem + delta_v
 
-        # --- 2. Adaptive Threshold Update ---
-        # 閾値成分も時間とともに減衰し、元の v_threshold に戻ろうとする
         decay_adap = self.dt / self.tau_adap
         self.adap_thresh = self.adap_thresh * (1.0 - decay_adap)
 
-        # --- 3. Spike Generation (Effective Threshold) ---
-        # 有効閾値 = ベース閾値 + 適応成分
         effective_threshold = self.v_threshold + self.adap_thresh
         
-        # 勾配計算は行わない（Objective.mdの制約: Backpropなし）
-        spikes = (self.mem >= effective_threshold).float()
+        # Spike generation with Surrogate Gradient
+        # ここで spike_fn を通すことで、学習時に勾配が伝播するようになる
+        spikes = self.spike_fn(self.mem - effective_threshold)
 
-        # --- 4. State Update after Spike ---
-        # Reset Membrane Potential
-        # Hard reset: V = V_reset
+        # State Update
         self.mem = self.mem * (1.0 - spikes) + self.v_reset * spikes
-        
-        # Update Adaptive Threshold
-        # 発火したニューロンの閾値を上げ、次の発火をしにくくする（不応期・スパース化の効果）
         self.adap_thresh = self.adap_thresh + (self.theta_plus * spikes)
 
         return spikes, self.mem
 
     @property
-    def membrane_potential(self):
+    def membrane_potential(self) -> torch.Tensor:
+        """後方互換性のためのプロパティ"""
         return self.mem
 
     def reset(self):

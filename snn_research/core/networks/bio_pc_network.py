@@ -1,155 +1,195 @@
 # ファイルパス: snn_research/core/networks/bio_pc_network.py
-# 変更点:
-# - get_mean_firing_rate メソッドの追加
-# - forward パスでの発火率統計の記録
+# 日本語タイトル: Bio-Inspired Predictive Coding Network
+# 目的・内容:
+#   階層型予測符号化ネットワーク (Rao & Ballard, 1999 + SNN)。
+#   各層は PredictiveCodingLayer で構成され、
+#   入力画像に対する推論(状態推定)と生成(再構成)を同時に行う。
+
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from typing import List, Optional, Dict, Any, cast
+from typing import List, Dict, Any, Optional, Tuple, cast
 
-from .abstract_snn_network import AbstractSNNNetwork
-from ..layers.predictive_coding import PredictiveCodingLayer
-from ..neurons.lif_neuron import LIFNeuron 
+from snn_research.core.network import AbstractNetwork
+from snn_research.core.layers.predictive_coding import PredictiveCodingLayer
+from snn_research.core.neurons.lif_neuron import LIFNeuron
 
-class BioPCNetwork(AbstractSNNNetwork):
+
+class BioPCNetwork(AbstractNetwork):
     """
-    予測符号化(PC)の原理に基づいた生物学的ニューラルネットワーク (Phase 2 仕様)。
+    生物学的予測符号化ネットワーク。
+    Hierarchical Predictive Coding using SNN layers.
     """
 
-    def __init__(self,
-                 layer_sizes: List[int],
-                 config: Optional[Dict[str, Any]] = None,
-                 **kwargs: Any):
+    def __init__(
+        self,
+        input_shape: Tuple[int, ...],
+        layer_sizes: List[int],
+        inference_steps: int = 10,
+        **kwargs: Any
+    ) -> None:
         super().__init__()
+        self.input_shape = input_shape
         self.layer_sizes = layer_sizes
-        self.config = config or {}
+        self.inference_steps = inference_steps
         
-        net_config = self.config.get("model", {}).get("network", {})
-        neuron_config = self.config.get("model", {}).get("neuron", {})
-        train_config = self.config.get("training", {}).get("biologically_plausible", {})
+        # 入力次元の平坦化サイズ
+        input_dim = int(torch.prod(torch.tensor(input_shape)).item())
         
-        self.inference_steps = net_config.get("inference_steps", 12)
-        self.sparsity = net_config.get("sparsity", 0.05)
-        self.plasticity_start_step = train_config.get("plasticity_schedule", {}).get("start_step", 8)
-        
-        self.neuron_params = {
-            "tau_mem": neuron_config.get("tau_mem", 20.0),
-            "tau_adap": neuron_config.get("tau_adap", 200.0),
-            "v_threshold": neuron_config.get("v_threshold", 1.0),
-            "v_reset": neuron_config.get("v_reset", 0.0),
-            "theta_plus": neuron_config.get("theta_plus", 0.5)
-        }
-
+        # レイヤー構築
+        # Layers: [Input(L0)] <-> [L1] <-> [L2] ...
+        # PCレイヤーは L1 から始まる (L0は入力層として扱う)
         self.pc_layers = nn.ModuleList()
-        for i in range(len(layer_sizes) - 1):
-            layer = PredictiveCodingLayer(
-                input_size=layer_sizes[i],
-                hidden_size=layer_sizes[i+1],
+        
+        # L1: Input -> Hidden1
+        # L1は下の層(Input)の予測誤差を受け取り、自身の状態を更新する
+        l1 = PredictiveCodingLayer(
+            input_size=input_dim,
+            hidden_size=layer_sizes[0],
+            neuron_class=LIFNeuron,
+            neuron_params=kwargs.get('neuron_params', {}),
+            inference_steps=inference_steps,
+            learning=True
+        )
+        self.pc_layers.append(l1)
+        
+        # L2...Ln
+        for i in range(1, len(layer_sizes)):
+            prev_hidden = layer_sizes[i-1]
+            curr_hidden = layer_sizes[i]
+            
+            l = PredictiveCodingLayer(
+                input_size=prev_hidden,
+                hidden_size=curr_hidden,
                 neuron_class=LIFNeuron,
-                neuron_params=self.neuron_params,
-                sparsity=self.sparsity,
-                inference_steps=1,
-                weight_tying=kwargs.get('weight_tying', True),
+                neuron_params=kwargs.get('neuron_params', {}),
+                inference_steps=inference_steps,
                 learning=True
             )
-            self.pc_layers.append(layer)
+            self.pc_layers.append(l)
+
+        self.built = True
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        推論と学習のステップを実行。
+        
+        Args:
+            x: Sensory Input [Batch, InputDim]
             
-        self.online_learning_enabled = False
+        Returns:
+            Dict: {
+                'reconstruction': Input層へのトップダウン予測,
+                'states': 各層の状態,
+                'errors': 各層の予測誤差
+            }
+        """
+        batch_size = x.shape[0]
         
-        # 統計用
-        self.last_mean_firing_rate = 0.0
-
-    def set_online_learning(self, enabled: bool):
-        self.online_learning_enabled = enabled
-
-    def reset_state(self) -> None:
-        for m in self.modules():
-            if m is self:
-                continue
-            reset_func = getattr(m, 'reset_state', None)
-            if callable(reset_func):
-                try:
-                    reset_func()
-                except Exception:
-                    pass
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x * 1.0 
-        batch_size = x.size(0)
-        device = x.device
-
-        states = [torch.zeros(batch_size, size, device=device) for size in self.layer_sizes]
-        states[0] = x 
-
-        errors: List[Optional[torch.Tensor]] = [None] * len(self.pc_layers)
+        # 1. 状態の初期化 (または前回の状態の継承)
+        # 本来は時間相関を利用するため前回の状態を保持すべきだが、
+        # ここでは簡易化のためゼロ初期化、もしくはステートフルにするならメンバ変数を使う
+        states: List[torch.Tensor] = []
+        for size in self.layer_sizes:
+            states.append(torch.zeros(batch_size, size, device=x.device))
+            
+        # 最上位層へのトップダウン入力（事前分布、通常は0またはノイズ）
+        top_prior = torch.zeros(batch_size, self.layer_sizes[-1], device=x.device)
         
-        # 統計用カウンタ
-        total_spikes = 0.0
-        total_neurons = 0
+        # 2. 推論 (Inference Phase) - Iterative Relaxation
+        # PredictiveCodingLayer.forward は内部で relaxation loop を回す設計になっているため、
+        # ここでは層ごとの結合を管理する。
+        # ただし、層間の相互作用が必要なため、ネットワーク全体でループを回すのが一般的。
+        # 今回の PredictiveCodingLayer は「ボトムアップ入力」と「トップダウン状態」を受け取る。
+        
+        # 層ごとの入出力を保持
+        layer_errors: List[torch.Tensor] = [torch.zeros(1)] * len(self.pc_layers)
+        layer_spikes: List[torch.Tensor] = [torch.zeros(1)] * len(self.pc_layers)
+        
+        # 入力層のデータ
+        current_bottom_input = x.view(batch_size, -1)
+        
+        # 双方向の信号伝播
+        # 下から上へ (Bottom-Up Error Pass) と 上から下へ (Top-Down Prediction Pass)
+        # を収束するまで繰り返すが、PC Layer自体がStepsを持っているので、
+        # ここでは単純に層を順番に実行する（簡易実装）。
+        # ※本来は全体最適化が必要
+        
+        for i, layer in enumerate(self.pc_layers):
+            layer_module = cast(PredictiveCodingLayer, layer)
+            
+            # 上位層からの状態（最上位ならPrior）
+            if i == len(self.pc_layers) - 1:
+                top_state = top_prior
+                top_error = None
+            else:
+                top_state = states[i+1] # 次の層の状態がトップダウン入力になる（※初期化時は0）
+                top_error = None # 簡易化
+            
+            # レイヤー実行 (Relaxation)
+            # bottom_up_input = 下層からの信号（L1の場合は画像、L2以降は下層の状態/誤差）
+            # ここでは「下層の誤差」ではなく「下層の状態」を入力として受け取り、内部で誤差計算する場合と設計が分かれる。
+            # PredictiveCodingLayerの実装を見ると:
+            #   raw_error = bottom_up_input - pred
+            # となっているので、bottom_up_input は「ターゲット信号」である。
+            
+            # L1への入力は画像(x)。
+            # L2への入力はL1の状態(states[0])。
+            target_signal = current_bottom_input
+            
+            updated_state, final_error, _, spikes = layer_module(
+                bottom_up_input=target_signal,
+                top_down_state=states[i], # 自身の現在の状態（初期値）
+                top_down_error=top_error
+            )
+            
+            # 状態更新
+            states[i] = updated_state
+            layer_errors[i] = final_error
+            layer_spikes[i] = spikes
+            
+            # 次の層へのターゲット信号は、この層の状態(State)となる
+            current_bottom_input = updated_state.detach() # 勾配を切るか繋ぐかは学習戦略による
 
-        for t in range(self.inference_steps):
-            new_states = [s.clone() for s in states]
-            new_errors = [None] * len(self.pc_layers)
-            new_states[0] = x
-
-            for i, layer_module in enumerate(self.pc_layers):
-                layer = cast(PredictiveCodingLayer, layer_module)
+        # 3. 学習 (Weight Update) - Local STDP
+        if self.training:
+            for i, layer in enumerate(self.pc_layers):
+                layer_module = cast(PredictiveCodingLayer, layer)
                 
-                bottom_val = states[i]
-                top_val = states[i+1]
-                td_error = errors[i+1] if i + 1 < len(errors) else None
-
-                updated_top, error_bottom, _, spikes = layer(
-                    bottom_up_input=bottom_val,
-                    top_down_state=top_val,
-                    top_down_error=td_error
+                # Pre: 上位層の状態 (Spikes)
+                # Post: 現在の層の状態 (Spikes)
+                if i == len(self.pc_layers) - 1:
+                    pre_spikes = (top_prior > 0).float() # 簡易スパイク化
+                else:
+                    pre_spikes = (states[i+1] > 0).float() # 上位層のスパイク近似
+                
+                post_spikes = layer_spikes[i]
+                
+                # 重み更新
+                layer_module.update_weights(
+                    bottom_input=None, 
+                    top_state=pre_spikes, 
+                    error=layer_errors[i], 
+                    spikes=post_spikes
                 )
 
-                new_states[i+1] = updated_top
-                new_errors[i] = error_bottom
-                
-                # スパイク集計 (発火率計算用)
-                if spikes is not None:
-                    total_spikes += spikes.sum().item()
-                    total_neurons += spikes.numel()
-                
-                # --- Online Learning ---
-                if self.training and self.online_learning_enabled:
-                    if t >= self.plasticity_start_step:
-                        layer.update_weights(
-                            bottom_input=bottom_val,
-                            top_state=top_val,
-                            error=error_bottom,
-                            spikes=spikes
-                        )
+        # L1の再構成画像 (Prediction = Generative(State))
+        # 再構成を取得するにはGenerative Pathを通す必要がある
+        l1 = cast(PredictiveCodingLayer, self.pc_layers[0])
+        # norm_state -> generative_fc -> generative_neuron -> output
+        # ここでは簡易的に線形変換のみで再構成近似を取得
+        with torch.no_grad():
+            recon = l1.generative_fc(l1.norm_state(states[0]))
 
-            states = new_states
-            errors = new_errors # type: ignore
+        return {
+            "reconstruction": recon,
+            "states": torch.cat([s.view(batch_size, -1) for s in states], dim=1),
+            "errors": torch.cat([e.view(batch_size, -1) for e in layer_errors], dim=1)
+        }
 
-        # 平均発火率の更新 (全タイムステップ・全レイヤーの平均)
-        if total_neurons > 0:
-            self.last_mean_firing_rate = total_spikes / total_neurons
-        else:
-            self.last_mean_firing_rate = 0.0
-
-        return states[-1]
-
-    def get_mean_firing_rate(self) -> float:
-        """直近のforwardパスにおける平均発火率を返す"""
-        return self.last_mean_firing_rate
-
-    def get_sparsity_loss(self) -> torch.Tensor:
-        total_loss = torch.tensor(0.0, device=self.get_device())
-        for layer in self.pc_layers:
-            loss_attr = getattr(layer, 'get_sparsity_loss', 0.0)
-            if callable(loss_attr):
-                total_loss += loss_attr()
-            else:
-                total_loss += cast(torch.Tensor, torch.as_tensor(loss_attr))
-        return total_loss
-
-    def get_device(self) -> torch.device:
-        try:
-            return next(self.parameters()).device
-        except StopIteration:
-            return torch.device("cpu")
+    def reset_state(self) -> None:
+        """状態リセット"""
+        # PredictiveCodingLayerはステートフルではない(forwardで完結する)設計に寄せているが、
+        # もし内部状態を持つならここでリセット
+        pass

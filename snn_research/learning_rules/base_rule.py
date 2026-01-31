@@ -1,51 +1,40 @@
 # ファイルパス: snn_research/learning_rules/base_rule.py
 # 日本語タイトル: Base Plasticity Rule Interface (Fixed)
 # 目的・内容:
-#   学習則の基底クラス。
-#   既存のコードが 'BioLearningRule' を参照しても動くようにエイリアスを追加。
+#   互換性エイリアス "BioLearningRule" を追加。
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Tuple, Optional
+from typing import Tuple, Dict, Any, Optional
+
 import torch
+import torch.nn as nn
+from torch import Tensor
 
 
-class PlasticityRule(ABC):
+class PlasticityRule(nn.Module, ABC):
     """
-    Abstract base class for synaptic plasticity rules.
-    全ての学習則（STDP, Forward-Forward, Active Inferenceなど）はこのクラスを継承する。
+    全ての学習則の基底クラス。
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__()
+        self.config = kwargs
 
     @abstractmethod
     def update(
         self,
-        pre_spikes: torch.Tensor,
-        post_spikes: torch.Tensor,
-        current_weights: torch.Tensor,
-        local_state: Optional[Dict[str, Any]] = None,
+        pre_spikes: Tensor,
+        post_spikes: Tensor,
+        current_weights: Tensor,
         **kwargs: Any
-    ) -> Tuple[Optional[torch.Tensor], Any]:
-        """
-        Calculate weight updates based on local activity.
-
-        Args:
-            pre_spikes (Tensor): Spikes from pre-synaptic neurons (Batch, N_pre)
-            post_spikes (Tensor): Spikes from post-synaptic neurons (Batch, N_post)
-            current_weights (Tensor): Current synaptic weights (N_post, N_pre)
-            local_state (Dict, optional): State dictionary for traces, etc.
-            **kwargs: Context information (e.g., 'phase', 'reward', 'dt')
-
-        Returns:
-            delta_w (Tensor or None): Weight change matrix (same shape as current_weights)
-            logs (Dict): Diagnostic metrics (e.g., 'mean_ltp', 'loss')
-        """
+    ) -> Tuple[Optional[Tensor], Dict[str, Any]]:
         pass
 
-    @abstractmethod
-    def get_config(self) -> Dict[str, Any]:
-        """Return configuration parameters for serialization."""
-        return {}
+    def reset_state(self) -> None:
+        pass
 
 
-# --- Alias for Backward Compatibility ---
-# これにより、古いコードが 'BioLearningRule' をインポートしてもエラーにならない
+# --- Backward Compatibility ---
 BioLearningRule = PlasticityRule
