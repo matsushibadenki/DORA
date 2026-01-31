@@ -11,7 +11,7 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
-from snn_research.core.layers.logic_gated_snn_v2_1 import SCALPerceptionLayer
+from snn_research.core.layers.logic_gated_snn import PhaseCriticalSCAL
 
 class EnsembleSCAL(nn.Module):
     def __init__(

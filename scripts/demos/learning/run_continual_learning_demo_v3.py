@@ -1,3 +1,10 @@
+# File path: scripts/demos/learning/run_continual_learning_demo.py
+# Title: Continual Learning Demo (Final Stable Version)
+# Description:
+#   Continual learning demo for MNIST -> Fashion-MNIST.
+#   [Fix] Added explicit cleanup to prevent Segmentation Fault at exit.
+#   [Fix] Set env vars for stability.
+
 from snn_research.core.ensemble_scal import EnsembleSCAL
 from snn_research.training.trainers.forward_forward import ForwardForwardTrainer, SpikingForwardForwardLayer, ForwardForwardLayer
 from typing import Dict, Optional, List, Tuple
@@ -13,6 +20,7 @@ import os
 import gc
 
 # Environment variables for stability
+# os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1" # Disable potential source of Bus Error
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 

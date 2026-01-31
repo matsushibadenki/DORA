@@ -1,15 +1,29 @@
 # configs/models/spiking_transformer.yaml
 # スパイキングトランスフォーマーモデルの設定
+# Tuned by Auto-Efficiency Tool (2026-01-31)
+# Result: Best Score 12.5084
 
 model:
   path: "spiking_transformer_model.pth"
   architecture_type: "spiking_transformer"
-  d_model: 256
-  num_layers: 6
-  n_head: 8
-  time_steps: 32
+  
+  # 最適化された構造パラメータ
+  # Dim=128, T=1 により、軽量かつ超高速な推論を実現
+  d_model: 128
+  num_layers: 4
+  n_head: 8     # 128 / 8 = 16 dim per head
+  
+  # 時間解像度 (T)
+  # T=1: Phase 1基準の超高速モード (推奨)
+  # T=4: 時間的ダイナミクスが必要なタスク用
+  time_steps: 1
+  
   neuron:
     type: "lif"
-    # 動的閾値パラメータ
+    # チューニングされたニューロンパラメータ
+    base_threshold: 1.07
+    tau: 2.19
+    
     threshold_decay: 0.99
     threshold_step: 0.05
+    detach_reset: True

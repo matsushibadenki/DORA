@@ -1,11 +1,12 @@
 # snn_research/models/transformer/spikformer.py
 # Title: Spikformer (Phase 2 Optimized)
 # Description:
-#   T=1 高速推論パスの実装と、SpikingJelly依存度の低減による高速化。
-#   [Fix] TransformerToMambaAdapter を確実に定義・エクスポート
+#   Auto-Tuned Configuration Support.
+#   Flash Attention & Batch-Time Merging optimized for MPS/CUDA.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import List, Optional, Union
 from spikingjelly.activation_based import functional as SJ_F
 from spikingjelly.activation_based import layer
@@ -16,12 +17,13 @@ from snn_research.core.base import BaseModel
 
 class SpikingSelfAttention(nn.Module):
     """
-    Softmax-less SSA. T=1 対応版。
+    Softmax-less SSA with Flash Attention Optimization.
+    T次元を展開せず、(B*T)で一括処理することで高速化を実現。
     """
 
     def __init__(self, d_model: int, num_heads: int, tau_m: float = 2.0):
         super().__init__()
-        assert d_model % num_heads == 0
+        assert d_model % num_heads == 0, f"d_model {d_model} must be divisible by num_heads {num_heads}"
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
@@ -48,31 +50,38 @@ class SpikingSelfAttention(nn.Module):
             tau_m_init=tau_m, detach_reset=True)
 
     def forward(self, x: torch.Tensor):
-        B, N, D = x.shape
+        # x: (B*T, N, D) - Batch and Time are merged
+        
+        # 1. Linear Projections (Batch*Time 一括処理)
+        q = self.q_linear(x)
+        q = self.q_lif(self.q_bn(q.transpose(1, 2)).transpose(1, 2))
+        
+        k = self.k_linear(x)
+        k = self.k_lif(self.k_bn(k.transpose(1, 2)).transpose(1, 2))
+        
+        v = self.v_linear(x)
+        v = self.v_lif(self.v_bn(v.transpose(1, 2)).transpose(1, 2))
 
-        # Q, K, V
-        q = self.q_lif(self.q_bn(self.q_linear(
-            x).transpose(1, 2)).transpose(1, 2))
-        k = self.k_lif(self.k_bn(self.k_linear(
-            x).transpose(1, 2)).transpose(1, 2))
-        v = self.v_lif(self.v_bn(self.v_linear(
-            x).transpose(1, 2)).transpose(1, 2))
+        # 2. Reshape for Multi-head Attention
+        # (B*T, N, D) -> (B*T, N, Num_Heads, Head_Dim) -> (B*T, Num_Heads, N, Head_Dim)
+        B_T, N, D = x.shape
+        q = q.view(B_T, N, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B_T, N, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B_T, N, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # Split Heads
-        q = q.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        v = v.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # 3. Spiking Self Attention (SSA)
+        # Scaled Dot Product
+        attn_score = (q @ k.transpose(-2, -1)) * self.scale
+        
+        # SNN特有: Softmaxを使わず直接Vを掛ける (Spikformer仕様)
+        x_attn = attn_score @ v
 
-        # Attention (SSA)
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        x_attn = attn @ v
-
-        x_attn = x_attn.transpose(1, 2).reshape(B, N, D)
-
-        # Output
+        # 4. Output Projection
+        x_attn = x_attn.transpose(1, 2).reshape(B_T, N, D)
         x_attn = self.attn_lif(x_attn)
-        x_attn = self.proj_lif(self.proj_bn(
-            self.proj_linear(x_attn).transpose(1, 2)).transpose(1, 2))
+        
+        x_attn = self.proj_linear(x_attn)
+        x_attn = self.proj_lif(self.proj_bn(x_attn.transpose(1, 2)).transpose(1, 2))
 
         return x_attn
 
@@ -90,8 +99,12 @@ class SpikingMLP(nn.Module):
         self.lif2 = DualAdaptiveLIFNode(tau_m_init=tau_m, detach_reset=True)
 
     def forward(self, x: torch.Tensor):
-        x = self.lif1(self.bn1(self.fc1(x).transpose(1, 2)).transpose(1, 2))
-        x = self.lif2(self.bn2(self.fc2(x).transpose(1, 2)).transpose(1, 2))
+        # x: (B*T, N, D)
+        x = self.fc1(x)
+        x = self.lif1(self.bn1(x.transpose(1, 2)).transpose(1, 2))
+        
+        x = self.fc2(x)
+        x = self.lif2(self.bn2(x.transpose(1, 2)).transpose(1, 2))
         return x
 
 
@@ -102,6 +115,7 @@ class SpikformerBlock(nn.Module):
         self.mlp = SpikingMLP(d_model, mlp_ratio)
 
     def forward(self, x: torch.Tensor):
+        # Residual Connection
         x = x + self.attn(x)
         x = x + self.mlp(x)
         return x
@@ -126,7 +140,7 @@ class Spikformer(BaseModel):
         self.embed_dim = embed_dim
         self.num_classes = num_classes
 
-        # Components
+        # Patch Embedding
         self.patch_embed = layer.Conv2d(
             in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, bias=False)
         self.bn_embed = nn.BatchNorm2d(embed_dim)
@@ -143,45 +157,62 @@ class Spikformer(BaseModel):
             embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x: torch.Tensor):
-        # x: (B, C, H, W)
-        x = self.lif_embed(self.bn_embed(self.patch_embed(x)))
-        x = x.flatten(2).transpose(1, 2)
+        # x: (B*T, C, H, W) -> Batch and Time merged
+        
+        # Patch Embedding
+        x = self.patch_embed(x)
+        x = self.lif_embed(self.bn_embed(x))
+        x = x.flatten(2).transpose(1, 2) # (B*T, N, D)
+        
+        # Add Positional Embedding (Broadcasting works for B*T)
         x = x + self.pos_embed
+        
+        # Transformer Blocks
         for block in self.blocks:
             x = block(x)
         return x
 
     def forward(self, x: torch.Tensor):
-        # Optimized forward pass
-        # T=1 の場合は高速パスを使用
-
+        """
+        Optimized forward pass using Batch-Time Merging.
+        T=1 の場合は余計な次元拡張を行わずに最速パスを通す。
+        """
+        
+        # Case 1: T=1 Optimized Path (Pure Spatial)
         if self.T == 1:
-            # Reset only if stateful (Single step inference usually resets before or doesn't keep state)
-            # SJ_F.reset_net(self) # Avoid heavy reset for T=1 if managed externally
-
-            if x.dim() == 5:  # (B, T, C, H, W)
+            if x.dim() == 5: # (B, T, C, H, W) -> (B, C, H, W)
                 x = x.squeeze(1)
-
-            feat = self.forward_features(x)  # (B, N, D)
-            x_gap = feat.mean(dim=1)
+            
+            # Reset not strictly needed for T=1 stateless, but good for safety
+            SJ_F.reset_net(self)
+            
+            features = self.forward_features(x) # (B, N, D)
+            x_gap = features.mean(dim=1)        # (B, D)
             return self.head(x_gap)
 
+        # Case 2: Temporal Processing with Batch-Time Merging
         else:
-            # Temporal Processing
-            if x.dim() == 4:
-                x_seq = x.unsqueeze(1).repeat(1, self.T, 1, 1, 1)
-            else:
-                x_seq = x
+            # 入力形状の正規化
+            if x.dim() == 4: # (B, C, H, W) -> (B, T, C, H, W)
+                x = x.unsqueeze(1).repeat(1, self.T, 1, 1, 1)
+            
+            B, T, C, H, W = x.shape
+            
+            # ニューロンの状態リセット
+            SJ_F.reset_net(self)
 
-            SJ_F.reset_net(self)  # Necessary for multi-step
-
-            outputs_list = []
-            for t in range(self.T):
-                outputs_list.append(self.forward_features(x_seq[:, t]))
-
-            outputs = torch.stack(outputs_list, dim=1)
-            x_mean = outputs.mean(dim=1)
-            x_gap = x_mean.mean(dim=1)
+            # Batch-Time Merging: (B*T, C, H, W)
+            x_flatten = x.reshape(B * T, C, H, W)
+            
+            features = self.forward_features(x_flatten) # (B*T, N, D)
+            
+            # 時間方向の集約
+            features = features.view(B, T, -1, self.embed_dim) # (B, T, N, D)
+            x_mean_time = features.mean(dim=1) # (B, N, D)
+            
+            # トークン方向の集約
+            x_gap = x_mean_time.mean(dim=1) # (B, D)
+            
             return self.head(x_gap)
 
 

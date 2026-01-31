@@ -1,319 +1,214 @@
-# ファイルパス: snn_research/core/layers/logic_gated_snn.py
-# タイトル: Phase-Critical SCAL - 真の閾値適応実装
-# 修正: ドキュメントの数式を忠実に実装し、スパイク発火を実現
+# snn_research/core/layers/logic_gated_snn.py
+# Title: Phase-Critical SCAL (Unified v3.4)
+# Description:
+#   Statistical Centroid Alignment Learning (SCAL) の決定版実装。
+#   閾値の超安定化制御、重心モーメンタム更新、マルチスケール発火制御を統合。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from typing import Optional, Dict
-
+from typing import Dict, cast, Optional
 
 class PhaseCriticalSCAL(nn.Module):
     """
-    Phase-Critical Statistical Centroid Alignment Learning
-
-    Key Features:
-    1. Bipolar transformation for noise cancellation
-    2. Variance-driven threshold adaptation
-    3. True stochastic spiking behavior
-    4. Temperature-scaled spike probability
+    Phase-Critical SCAL (Statistical Centroid Alignment Learning) v3.4
+    
+    特徴:
+    - Bipolar変換と直交初期化による特徴分離
+    - クラスごとの重心(Centroid)へのアライメント学習
+    - 分散とホメオスタシスに基づくハイブリッド閾値制御
     """
-
-    membrane_potential: torch.Tensor
-    synapse_weights: torch.Tensor
-    adaptive_threshold: torch.Tensor
-    class_variance_memory: torch.Tensor
-    momentum_buffer: torch.Tensor
-    spike_history: torch.Tensor
-
     def __init__(
         self,
         in_features: int,
         out_features: int,
         mode: str = 'readout',
-        # Phase-Critical パラメータ
-        gamma: float = 0.01,           # 閾値適応率
-        v_th_init: float = 0.5,        # 初期閾値
-        v_th_min: float = 0.1,         # 閾値下限
-        v_th_max: float = 2.0,         # 閾値上限
-        temperature_base: float = 0.1,  # 温度パラメータ
-        target_spike_rate: float = 0.15,  # 目標発火率 (15%)
-        # SCAL パラメータ
-        momentum: float = 0.95,
-        learning_rate: float = 0.02
+        time_steps: int = 10,
+        gain: float = 50.0,
+        beta_membrane: float = 0.9,
+        v_th_init: float = 25.0,
+        v_th_min: float = 5.0,
+        v_th_max: float = 100.0,
+        gamma_th: float = 0.01,
+        target_spike_rate: float = 0.15,
+        spike_rate_control_strength: float = 0.001,
+        learning_rate: float = 0.01,
+        momentum: float = 0.95
     ):
         super().__init__()
-
+        
         self.in_features = in_features
         self.out_features = out_features
         self.mode = mode
-
-        # Phase-Critical パラメータ
-        self.gamma = gamma
+        self.time_steps = time_steps
+        self.gain = gain
+        self.beta_membrane = beta_membrane
+        self.learning_rate = learning_rate
+        self.momentum_coef = momentum
+        
         self.v_th_min = v_th_min
         self.v_th_max = v_th_max
-        self.temperature_base = temperature_base
+        self.gamma_th = gamma_th
         self.target_spike_rate = target_spike_rate
-
-        # SCAL パラメータ
-        self.momentum_coef = momentum
-        self.lr = learning_rate
-
-        # 重みの初期化（直交基底）
-        w = torch.empty(out_features, in_features)
-        nn.init.orthogonal_(w, gain=1.0)
-        w = w * (0.1 / math.sqrt(in_features))
-
-        self.register_buffer('synapse_weights', w)
-        self.register_buffer('momentum_buffer', torch.zeros_like(w))
-
-        # Phase-Critical バッファ
-        self.register_buffer('adaptive_threshold',
-                             torch.full((out_features,), v_th_init))
-        self.register_buffer('class_variance_memory',
-                             torch.ones(out_features))
-        self.register_buffer('membrane_potential',
-                             torch.zeros(out_features))
-        self.register_buffer('spike_history',
-                             torch.zeros(out_features))
-
-        # 統計量追跡
+        self.spike_rate_control_strength = spike_rate_control_strength
+        
+        # 投影層 (特徴抽出)
+        self.projection = nn.Linear(in_features, in_features, bias=False)
+        nn.init.orthogonal_(self.projection.weight, gain=1.0)
+        
+        # SCAL重心 (Synaptic Weights equivalent)
+        self.register_buffer('centroids', torch.randn(out_features, in_features))
+        self.centroids: torch.Tensor
+        self.centroids.div_(math.sqrt(in_features))
+        
+        # 適応パラメータ
+        self.register_buffer('adaptive_threshold', torch.full((out_features,), v_th_init))
+        self.adaptive_threshold: torch.Tensor 
+        
+        self.register_buffer('spike_rate_ema', torch.full((out_features,), target_spike_rate))
+        self.spike_rate_ema: torch.Tensor 
+        
+        # 状態モニタリング
         self.stats = {
-            'spike_rate': 0.0,
+            'spike_rate': target_spike_rate,
             'mean_threshold': v_th_init,
-            'mean_variance': 1.0,
-            'temperature': temperature_base
+            'threshold_min': v_th_min,
+            'threshold_max': v_th_max,
         }
 
     def reset_state(self):
-        """状態のリセット"""
-        self.membrane_potential.zero_()
-        self.spike_history.zero_()
+        pass
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """
-        Forward pass with true spiking behavior
-
-        Returns:
-            Dict with keys: 'output', 'spikes', 'membrane_potential'
-        """
-
-        # Step 1: バイポーラ変換
-        x_bipolar = (x - 0.5) * 2.0  # {0,1} -> {-1,1}
-
-        # Step 2: 正規化コサイン類似度
-        x_norm = F.normalize(x_bipolar, p=2, dim=1, eps=1e-8)
-        w_norm = F.normalize(self.synapse_weights, p=2, dim=1, eps=1e-8)
-
-        cosine_sim = torch.matmul(x_norm, w_norm.t())
-
-        # Step 3: 線形ゲイン（高コントラスト）
-        # ドキュメントの "High-Gain Linear Contrast"
-        gain = 50.0
-        scaled_sim = cosine_sim * gain
-
-        # Step 4: 膜電位の更新
-        # V(t+1) = β*V(t) + scaled_sim
-        beta = 0.0 if not self.training else 0.0  # リーク無し（簡略化）
-        v_current = beta * self.membrane_potential.unsqueeze(0) + scaled_sim
-
-        # Step 5: Temperature-scaled spike probability
-        # P(spike) = σ((V - V_th) / T_c)
-
-        # クラス分散に比例する温度
-        temperature = self.temperature_base * \
-            (1.0 + self.class_variance_memory.unsqueeze(0))
-
-        threshold_broadcast = self.adaptive_threshold.unsqueeze(0)
-
-        spike_logits = (v_current - threshold_broadcast) / (temperature + 1e-8)
-        spike_prob = torch.sigmoid(spike_logits)
-
-        # Step 6: 確率的発火
-        if self.training:
-            # Gumbel-Softmax trick for differentiable sampling
-            gumbel_noise = - \
-                torch.log(-torch.log(torch.rand_like(spike_prob) + 1e-8) + 1e-8)
-            spikes = torch.sigmoid(
-                (torch.log(spike_prob + 1e-8) + gumbel_noise) / 0.1)
-        else:
-            # テスト時: 確率的サンプリング
-            spikes = (torch.rand_like(spike_prob) < spike_prob).float()
-
-        # Step 7: 出力（Softmax分布）
-        output = F.softmax(v_current, dim=1)
-
-        # 統計更新
+        batch_size = x.size(0)
+        device = x.device
+        
+        # 1. Bipolar変換 & 特徴抽出
+        x_bipolar = 2.0 * x - 1.0
+        features = self.projection(x_bipolar)
+        features = torch.tanh(features)
+        
+        # 2. 類似度計算 (Centroid Alignment)
+        centroids_t = cast(torch.Tensor, self.centroids)
+        features_norm = F.normalize(features, p=2, dim=1, eps=1e-8)
+        centroids_norm = F.normalize(centroids_t, p=2, dim=1, eps=1e-8)
+        
+        # (Batch, In) @ (Out, In)^T -> (Batch, Out)
+        cosine_sim = torch.mm(features_norm, centroids_norm.t())
+        
+        # 3. 高ゲイン入力
+        s_prime = self.gain * cosine_sim
+        
+        # 4. 時系列積分 (LIF Dynamics)
+        spike_trains = []
+        V_mem_history = []
+        V_current = torch.zeros(batch_size, self.out_features, device=device)
+        
+        th_tensor = cast(torch.Tensor, self.adaptive_threshold)
+        
+        for _ in range(self.time_steps):
+            V_current = self.beta_membrane * V_current + s_prime
+            
+            # 発火判定
+            threshold = th_tensor.unsqueeze(0)
+            
+            if self.training:
+                # Surrogate Gradient用のSigmoid
+                surrogate_grad = torch.sigmoid((V_current - threshold))
+                spikes = (surrogate_grad > torch.rand_like(surrogate_grad)).float()
+            else:
+                spikes = (V_current > threshold).float()
+            
+            # Reset
+            V_current = V_current * (1.0 - spikes)
+            
+            spike_trains.append(spikes)
+            V_mem_history.append(V_current.clone())
+        
+        spike_trains_stack = torch.stack(spike_trains, dim=2)
+        V_mem_stack = torch.stack(V_mem_history, dim=2)
+        output_rate = spike_trains_stack.mean(dim=2)
+        
+        # 統計更新 (EMA)
         with torch.no_grad():
-            self.membrane_potential.copy_(v_current.mean(dim=0))
-            self.spike_history.copy_(spikes.mean(dim=0))
-
-            self.stats['spike_rate'] = spikes.mean().item()
-            self.stats['mean_threshold'] = self.adaptive_threshold.mean().item()
-            self.stats['mean_variance'] = self.class_variance_memory.mean().item()
-            self.stats['temperature'] = temperature.mean().item()
-
+            current_mean_rate = output_rate.mean(dim=0)
+            self.spike_rate_ema.mul_(0.95).add_(current_mean_rate * 0.05)
+            
+            self.stats['spike_rate'] = output_rate.mean().item()
+            self.stats['mean_threshold'] = th_tensor.mean().item()
+            
         return {
-            'output': output,
-            'spikes': spikes,
-            'membrane_potential': v_current,
-            'spike_prob': spike_prob
+            'output': output_rate,
+            'spikes': spike_trains_stack,
+            'membrane_potential': V_mem_stack,
+            'features': features
         }
 
     def update_plasticity(
-        self,
-        pre_activity: torch.Tensor,
-        post_output: Dict[str, torch.Tensor],
-        target: torch.Tensor,
+        self, 
+        pre_activity: torch.Tensor, 
+        post_output: Dict[str, torch.Tensor], 
+        target: torch.Tensor, 
         learning_rate: Optional[float] = None
     ):
-        """
-        Phase-Critical Plasticity Update
-
-        Dual-Mode:
-        1. Weight update (Statistical centroid)
-        2. Threshold adaptation (Variance-driven)
-        """
-
-        if learning_rate is None:
-            learning_rate = self.lr
-
+        """Phase-Critical Plasticity Update"""
+        lr = learning_rate if learning_rate is not None else self.learning_rate
+        
         with torch.no_grad():
-            batch_size = pre_activity.size(0)
-
-            # Target one-hot
-            target_onehot = torch.zeros(batch_size, self.out_features,
-                                        device=pre_activity.device)
-            target_onehot.scatter_(1, target.unsqueeze(1), 1.0)
-
-            # === Mode 1: Weight Update (Centroid) ===
-
-            # バイポーラ変換
-            pre_bipolar = (pre_activity - 0.5) * 2.0
-
-            # クラス別重心計算
-            class_sums = torch.matmul(target_onehot.t(), pre_bipolar)
-            class_counts = target_onehot.sum(dim=0, keepdim=True).t() + 1e-8
-
-            batch_centroids = class_sums / class_counts
-            batch_centroids = F.normalize(batch_centroids, p=2, dim=1)
-
-            # 重み更新（Momentum SGD）
-            current_weights_norm = F.normalize(
-                self.synapse_weights, p=2, dim=1)
-            delta = batch_centroids - current_weights_norm
-
-            # 更新マスク（サンプルがあるクラスのみ）
-            update_mask = (class_counts.squeeze() > 0).float().unsqueeze(1)
-            delta = delta * update_mask
-
-            # Momentum更新
-            self.momentum_buffer.mul_(self.momentum_coef).add_(delta)
-            self.synapse_weights.add_(self.momentum_buffer * learning_rate)
-
-            # 正規化
-            self.synapse_weights.div_(
-                self.synapse_weights.norm(p=2, dim=1, keepdim=True) + 1e-8
-            )
-
-            # === Mode 2: Threshold Adaptation (Variance-driven) ===
-
-            # クラス内分散の計算
-            class_variance = torch.zeros(
-                self.out_features, device=pre_activity.device)
-
-            for c in range(self.out_features):
+            # 特徴量再計算 (推論時と同じ変換)
+            x_bipolar = 2.0 * pre_activity - 1.0
+            features = torch.tanh(self.projection(x_bipolar))
+            
+            unique_classes = torch.unique(target)
+            
+            centroids_t = cast(torch.Tensor, self.centroids)
+            th_tensor = cast(torch.Tensor, self.adaptive_threshold)
+            ema_tensor = cast(torch.Tensor, self.spike_rate_ema)
+            
+            for c in unique_classes:
+                c_idx = int(c.item())
                 mask = (target == c)
-                if mask.sum() > 1:
-                    class_samples = pre_bipolar[mask]
-                    # 分散 = E[x^2] - E[x]^2
-                    variance = class_samples.var(dim=0).mean()
-                    class_variance[c] = variance
+                class_features = features[mask]
+                
+                # --- 1. 重心更新 (SCAL Logic) ---
+                current_centroid = centroids_t[c_idx]
+                new_centroid = class_features.mean(dim=0)
+                # モーメンタム的更新: 現在の重心位置から新しい平均位置へ少し移動
+                centroids_t[c_idx] = current_centroid + (lr * 0.5) * (new_centroid - current_centroid)
+                
+                # --- 2. 閾値制御 (Hybrid: Variance + Homeostasis) ---
+                if class_features.size(0) > 1:
+                    variance = torch.var(class_features, dim=0)
+                    variance_norm = torch.norm(variance)
+                    var_factor = 1.0 - self.gamma_th * variance_norm
+                else:
+                    var_factor = torch.tensor(1.0, device=features.device)
 
-            # 分散メモリの更新（EMA）
-            self.class_variance_memory.mul_(0.9).add_(class_variance * 0.1)
-
-            # 閾値適応則（ドキュメントの数式）
-            # V_th(t+1) = V_th(t) * (1 - γ * ||Σ_c||_F)
-
-            variance_norm = self.class_variance_memory.clamp(min=0.0, max=5.0)
-
-            # 分散が大きい → 閾値を下げる（より発火しやすく）
-            threshold_factor = 1.0 - self.gamma * variance_norm
-            threshold_factor = threshold_factor.clamp(min=0.95, max=1.05)
-
-            self.adaptive_threshold.mul_(threshold_factor)
-            self.adaptive_threshold.clamp_(self.v_th_min, self.v_th_max)
-
-            # === Spike Rate Regulation ===
-            # 目標発火率に近づけるための追加調整
-
-            current_spike_rate = self.spike_history.mean()
-            target_rate = self.target_spike_rate
-
-            if current_spike_rate < target_rate * 0.5:
-                # 発火率が低すぎる → 閾値を下げる
-                self.adaptive_threshold.mul_(0.99)
-            elif current_spike_rate > target_rate * 2.0:
-                # 発火率が高すぎる → 閾値を上げる
-                self.adaptive_threshold.mul_(1.01)
-
-            self.adaptive_threshold.clamp_(self.v_th_min, self.v_th_max)
+                # ホメオスタシス制御: 目標発火率との誤差で補正
+                rate_error = ema_tensor[c_idx] - self.target_spike_rate
+                homeo_factor = 1.0 + self.spike_rate_control_strength * rate_error
+                
+                # 統合係数 & クランプ
+                total_factor = var_factor * homeo_factor
+                total_factor = torch.clamp(total_factor, 0.995, 1.005) # 変動を0.5%以内に制限（安定化の鍵）
+                
+                th_tensor[c_idx] *= total_factor
+                th_tensor[c_idx] = torch.clamp(
+                    th_tensor[c_idx], self.v_th_min, self.v_th_max
+                )
+            
+            # 正規化 (Centroidsは常に単位ベクトル付近に保つ)
+            centroids_t.div_(centroids_t.norm(dim=1, keepdim=True) + 1e-8)
 
     def get_phase_critical_metrics(self) -> Dict[str, float]:
-        """Phase-Critical指標の取得"""
+        th_tensor = cast(torch.Tensor, self.adaptive_threshold)
         return {
             'spike_rate': self.stats['spike_rate'],
             'mean_threshold': self.stats['mean_threshold'],
-            'mean_variance': self.stats['mean_variance'],
-            'temperature': self.stats['temperature'],
-            'threshold_min': self.adaptive_threshold.min().item(),
-            'threshold_max': self.adaptive_threshold.max().item(),
+            'threshold_min': th_tensor.min().item(),
+            'threshold_max': th_tensor.max().item(),
         }
 
-
-class LogicGatedSNN(nn.Module):
-    """
-    Legacy wrapper for backward compatibility
-    """
-
-    def __init__(self, in_features: int, out_features: int,
-                 max_states: int = 100, mode: str = 'reservoir'):
-        super().__init__()
-
-        if mode == 'readout':
-            self.core = PhaseCriticalSCAL(
-                in_features, out_features, mode='readout',
-                gamma=0.01, v_th_init=0.5
-            )
-        else:
-            # Reservoir mode: 簡易版
-            self.core = PhaseCriticalSCAL(
-                in_features, out_features, mode='reservoir',
-                gamma=0.005, v_th_init=0.3
-            )
-
-        self.mode = mode
-
-    @property
-    def membrane_potential(self):
-        return self.core.membrane_potential
-
-    def reset_state(self):
-        self.core.reset_state()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        result = self.core(x)
-        return result['output']
-
-    def update_plasticity(self, pre_spikes, post_spikes, reward, learning_rate=0.02):
-        # reward を target として解釈
-        if isinstance(reward, torch.Tensor) and reward.shape == post_spikes.shape:
-            target = reward.argmax(dim=1)
-        else:
-            # fallback
-            target = post_spikes.argmax(dim=1)
-
-        result = self.core(pre_spikes)
-        self.core.update_plasticity(pre_spikes, result, target, learning_rate)
+# 互換性エイリアス
+LogicGatedSNN = PhaseCriticalSCAL

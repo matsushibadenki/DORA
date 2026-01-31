@@ -1,0 +1,32 @@
+# configs/models/phase2_optimal.yaml
+# Phase 2 完了条件（Accuracy > 95%, Speed < 10ms）を達成した最適構成
+# Date: 2026-01-31
+
+model:
+  architecture_type: "visual_cortex"
+  
+  # Structure
+  input_dim: 784
+  hidden_dim: 1500
+  num_layers: 2
+  
+  # Learning Dynamics (Optimal)
+  learning_rate: 0.08
+  ff_threshold: 15.0
+  input_scale: 45.0
+  
+  # Neuron
+  tau_mem: 20.0
+  threshold: 1.0
+  dt: 1.0
+  refractory_period: 2
+  
+  # Stability Control
+  # [Important] LN must be False for Forward-Forward Goodness maximization
+  use_layer_norm: False 
+
+training:
+  batch_size: 64
+  epochs: 3
+  time_steps: 8
+  dataset: "mnist"

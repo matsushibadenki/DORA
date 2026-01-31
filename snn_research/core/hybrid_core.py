@@ -64,7 +64,7 @@ class PhaseCriticalHybridCore(nn.Module):
         # Reservoir params
         reservoir_mode: str = 'simple',
         # Phase-Critical params
-        gamma: float = 0.015, 
+        gamma_th: float = 0.015, 
         v_th_init: float = 0.5,
         target_spike_rate: float = 0.15
     ):
@@ -78,7 +78,7 @@ class PhaseCriticalHybridCore(nn.Module):
             self.fast_process = PhaseCriticalSCAL(
                 in_features, hidden_features, 
                 mode='reservoir',
-                gamma=gamma * 0.5,
+                gamma_th=gamma_th * 0.5,
                 v_th_init=0.3,
                 target_spike_rate=0.20
             )
@@ -102,7 +102,7 @@ class PhaseCriticalHybridCore(nn.Module):
         self.output_gate = PhaseCriticalSCAL(
             hidden_features, out_features, 
             mode='readout',
-            gamma=gamma,
+            gamma_th=gamma_th,
             v_th_init=v_th_init,
             target_spike_rate=target_spike_rate
         )
@@ -210,7 +210,7 @@ class HybridNeuromorphicCore(nn.Module):
         self.core = PhaseCriticalHybridCore(
             in_features, hidden_features, out_features,
             reservoir_mode='simple',
-            gamma=0.015,
+            gamma_th=0.015,
             v_th_init=0.5
         )
         
