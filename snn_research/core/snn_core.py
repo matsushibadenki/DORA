@@ -1,6 +1,6 @@
 # snn_research/core/snn_core.py
-# Title: Spiking Neural Substrate (Core)
-# Description: Mypy型安全性を強化し、未実装メソッドを追加した修正版
+# Title: Spiking Neural Substrate (Phase 21: Brute Force Init)
+# Description: 正規分布初期化(std=2.0)を採用し、初期発火を物理的に保証する
 
 from __future__ import annotations
 
@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 class SynapticProjection(nn.Module):
-    """ニューロン集団間のシナプス結合と可塑性管理"""
-
     def __init__(
         self,
         in_features: int,
@@ -27,12 +25,15 @@ class SynapticProjection(nn.Module):
         plasticity_rule: Optional[PlasticityRule] = None
     ) -> None:
         super().__init__()
-        self.synapse = nn.Linear(in_features, out_features, bias=False)
+        self.synapse = nn.Linear(in_features, out_features, bias=True)
         self.plasticity_rule = plasticity_rule
         self.plasticity_state: Dict[str, Any] = {}
         
-        # 初期化
-        nn.init.orthogonal_(self.synapse.weight, gain=1.4)
+        # [CRITICAL FIX] Revert to High-Variance Normal Initialization
+        # Orthogonal(gain=5) -> std approx 0.18 (Too small)
+        # Normal(std=2.0) -> std 2.0 (Strong current)
+        nn.init.constant_(self.synapse.bias, 1.0)
+        nn.init.normal_(self.synapse.weight, mean=0.0, std=2.0)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.synapse(x)
@@ -57,8 +58,8 @@ class SynapticProjection(nn.Module):
             )
 
             if delta_w is not None:
-                self.synapse.weight.data += delta_w
-                self.synapse.weight.data.clamp_(-5.0, 5.0)
+                self.synapse.weight.data.add_(delta_w)
+                self.synapse.weight.data.clamp_(-10.0, 10.0)
 
         return logs
     
@@ -67,10 +68,6 @@ class SynapticProjection(nn.Module):
 
 
 class SpikingNeuralSubstrate(nn.Module):
-    """
-    Neuromorphic OS Kernel.
-    """
-
     def __init__(
         self,
         config: Dict[str, Any],
@@ -88,17 +85,10 @@ class SpikingNeuralSubstrate(nn.Module):
         self.topology: List[Dict[str, str]] = []
         self.prev_spikes: Dict[str, Optional[Tensor]] = {}
         
-        # 統計用
         self.total_spike_count: int = 0
-
         logger.info("⚡ SpikingNeuralSubstrate initialized.")
 
-    def add_neuron_group(
-        self,
-        name: str,
-        num_neurons: int,
-        neuron_model: Optional[nn.Module] = None
-    ) -> None:
+    def add_neuron_group(self, name: str, num_neurons: int, neuron_model: Optional[nn.Module] = None) -> None:
         if neuron_model is None:
             neuron_model = LIFNeuron(
                 features=num_neurons,
@@ -106,27 +96,14 @@ class SpikingNeuralSubstrate(nn.Module):
                 v_threshold=self.config.get("threshold", 1.0),
                 dt=self.dt
             )
-
         if hasattr(neuron_model, "set_stateful"):
             cast(Any, neuron_model).set_stateful(True)
-
         self.neuron_groups[name] = neuron_model.to(self.device)
         self.prev_spikes[name] = None
 
-    def add_projection(
-        self,
-        name: str,
-        source: str,
-        target: str,
-        plasticity_rule: Optional[PlasticityRule] = None
-    ) -> None:
-        if source not in self.neuron_groups or target not in self.neuron_groups:
-            raise ValueError(f"Source {source} or Target {target} not found.")
-
+    def add_projection(self, name: str, source: str, target: str, plasticity_rule: Optional[PlasticityRule] = None) -> None:
         src_module = cast(Any, self.neuron_groups[source])
         tgt_module = cast(Any, self.neuron_groups[target])
-
-        # feature属性がない場合に対応するためのフォールバック
         src_dim = getattr(src_module, 'features', getattr(src_module, 'out_features', None))
         tgt_dim = getattr(tgt_module, 'features', getattr(tgt_module, 'out_features', None))
         
@@ -138,37 +115,22 @@ class SpikingNeuralSubstrate(nn.Module):
         self.topology.append({"name": name, "src": source, "tgt": target})
 
     def forward(self, x: Union[Tensor, Dict[str, Tensor]], **kwargs: Any) -> Tensor:
-        """
-        nn.Moduleの標準呼び出し。
-        入力がTensorの場合は最初のニューロン層への入力とみなす。
-        """
         inputs: Dict[str, Tensor] = {}
-        if isinstance(x, dict):
-            inputs = x
+        if isinstance(x, dict): inputs = x
         elif torch.is_tensor(x):
-            # 入力層を自動推定 (Retina, Inputなど) または登録順の最初
             input_names = [name for name in self.neuron_groups.keys() if "retina" in name.lower() or "input" in name.lower()]
             target_layer = input_names[0] if input_names else list(self.neuron_groups.keys())[0]
             inputs[target_layer] = x
-        else:
-            raise TypeError(f"Unsupported input type: {type(x)}")
+        else: raise TypeError(f"Unsupported input type: {type(x)}")
 
         results = self.forward_step(inputs, **kwargs)
-        
-        # エージェントが期待する出力形式 (Tensor) に合わせる
         spikes = results["spikes"]
         output_names = [name for name in spikes.keys() if "output" in name.lower() or "motor" in name.lower() or "readout" in name.lower()]
         target_output = output_names[0] if output_names else list(spikes.keys())[-1]
-        
         return spikes[target_output]
 
-    def forward_step(
-        self,
-        external_inputs: Dict[str, Tensor],
-        **kwargs: Any
-    ) -> Dict[str, Any]:
+    def forward_step(self, external_inputs: Dict[str, Tensor], **kwargs: Any) -> Dict[str, Any]:
         self.time_step += 1
-        
         batch_size = 1
         for inp in external_inputs.values():
             batch_size = inp.shape[0]
@@ -177,124 +139,91 @@ class SpikingNeuralSubstrate(nn.Module):
         self._initialize_prev_spikes_if_needed(batch_size)
         current_inputs = self._integrate_inputs(external_inputs, batch_size)
         current_spikes = self._update_neuron_dynamics(current_inputs, batch_size)
-        self._apply_plasticity(current_spikes, **kwargs)
+        
+        if kwargs.get("instant_plasticity", False): 
+            self._apply_plasticity(current_spikes, **kwargs)
+            
         self.prev_spikes = cast(Dict[str, Optional[Tensor]], current_spikes)
-
-        # 統計更新
         for s in current_spikes.values():
             self.total_spike_count += int(s.sum().item())
 
         return {"spikes": current_spikes}
 
+    def apply_plasticity_batch(self, firing_rates: Dict[str, Tensor], **kwargs: Any) -> None:
+        for conn in self.topology:
+            proj_name = conn['name']
+            src_name = conn['src']
+            tgt_name = conn['tgt']
+            proj_module = cast(SynapticProjection, self.projections[proj_name])
+
+            if getattr(proj_module, 'plasticity_rule', None) is not None:
+                src_rates = firing_rates.get(src_name)
+                tgt_rates = firing_rates.get(tgt_name)
+                if src_rates is not None and tgt_rates is not None:
+                    proj_module.apply_plasticity(pre_spikes=src_rates, post_spikes=tgt_rates, **kwargs)
+
     def _initialize_prev_spikes_if_needed(self, batch_size: int) -> None:
         for name, group in self.neuron_groups.items():
             prev = self.prev_spikes.get(name)
-            # mypyのための型絞り込み：prevがNoneでない場合のみshapeチェックを行う
             if prev is None or prev.shape[0] != batch_size:
                 group_module = cast(Any, group)
                 num_neurons = int(getattr(group_module, 'features', getattr(group_module, 'out_features', 0)))
                 if num_neurons > 0:
-                    self.prev_spikes[name] = torch.zeros(
-                        batch_size, num_neurons, device=self.device
-                    )
+                    self.prev_spikes[name] = torch.zeros(batch_size, num_neurons, device=self.device)
 
     def _integrate_inputs(self, external_inputs: Dict[str, Tensor], batch_size: int) -> Dict[str, Tensor]:
         current_inputs: Dict[str, Tensor] = {}
-
         for conn in self.topology:
-            proj_name = conn['name']
-            src_name = conn['src']
-            tgt_name = conn['tgt']
-
-            proj_module = self.projections[proj_name]
-            src_spikes_prev = self.prev_spikes.get(src_name)
-            
-            if src_spikes_prev is None:
-                 continue 
-
-            synaptic_current = proj_module(src_spikes_prev)
-
-            if tgt_name not in current_inputs:
-                current_inputs[tgt_name] = synaptic_current
-            else:
-                current_inputs[tgt_name] = current_inputs[tgt_name] + synaptic_current
-
+            proj_module = self.projections[conn['name']]
+            src_spikes_prev = self.prev_spikes.get(conn['src'])
+            if src_spikes_prev is not None:
+                synaptic_current = proj_module(src_spikes_prev)
+                tgt = conn['tgt']
+                current_inputs[tgt] = current_inputs.get(tgt, 0) + synaptic_current
+        
         for group_name, inp in external_inputs.items():
             if group_name in self.neuron_groups:
                 inp = inp.to(self.device)
-                if group_name not in current_inputs:
-                    current_inputs[group_name] = inp
-                else:
-                    if current_inputs[group_name].shape == inp.shape:
-                        current_inputs[group_name] = current_inputs[group_name] + inp
-        
+                current_inputs[group_name] = current_inputs.get(group_name, 0) + inp
         return current_inputs
 
     def _update_neuron_dynamics(self, current_inputs: Dict[str, Tensor], batch_size: int) -> Dict[str, Tensor]:
         current_spikes: Dict[str, Tensor] = {}
-
         for name, group in self.neuron_groups.items():
-            if name in current_inputs:
-                input_current = current_inputs[name]
-            else:
-                group_module = cast(Any, group)
-                num_neurons = int(getattr(group_module, 'features', getattr(group_module, 'out_features', 0)))
-                input_current = torch.zeros(
-                    batch_size, num_neurons, device=self.device
-                )
-
-            spikes, _ = group(input_current)
+            inp = current_inputs.get(name)
+            if inp is None:
+                num = int(getattr(group, 'features', 0))
+                inp = torch.zeros(batch_size, num, device=self.device)
+            spikes, _ = group(inp)
             current_spikes[name] = spikes
-
         return current_spikes
 
     def _apply_plasticity(self, current_spikes: Dict[str, Tensor], **kwargs: Any) -> None:
         for conn in self.topology:
-            proj_name = conn['name']
-            src_name = conn['src']
-            tgt_name = conn['tgt']
-
-            proj_module = cast(SynapticProjection, self.projections[proj_name])
-
-            if getattr(proj_module, 'plasticity_rule', None) is not None:
-                src_spikes_prev = self.prev_spikes.get(src_name)
-                tgt_spikes_curr = current_spikes.get(tgt_name)
-                
-                if src_spikes_prev is not None and tgt_spikes_curr is not None:
-                    proj_module.apply_plasticity(
-                        pre_spikes=src_spikes_prev,
-                        post_spikes=tgt_spikes_curr,
-                        dt=self.dt,
-                        **kwargs
-                    )
+            proj = self.projections[conn['name']]
+            if proj.plasticity_rule:
+                pre = self.prev_spikes.get(conn['src'])
+                post = current_spikes.get(conn['tgt'])
+                if pre is not None and post is not None:
+                    proj.apply_plasticity(pre, post, **kwargs)
 
     def reset_state(self) -> None:
         self.time_step = 0
         self.total_spike_count = 0
         self.prev_spikes = {}
-        for name, group in self.neuron_groups.items():
-            if hasattr(group, 'reset'):
-                cast(Any, group).reset()
-            self.prev_spikes[name] = None
-        
+        for group in self.neuron_groups.values():
+            if hasattr(group, 'reset'): group.reset()
+            elif hasattr(group, 'reset_state'): group.reset_state()
         for proj in self.projections.values():
-            if hasattr(proj, 'reset_state'):
-                cast(Any, proj).reset_state()
+            if hasattr(proj, 'reset_state'): proj.reset_state()
+        self.prev_spikes = {name: None for name in self.neuron_groups}
 
-        logger.info("🔄 Substrate state reset.")
-    
-    # --- Added missing methods referenced by Agent/Report scripts ---
     def get_firing_rates(self) -> Dict[str, float]:
         rates = {}
         for name, spikes in self.prev_spikes.items():
-            if spikes is not None:
-                rates[name] = float(spikes.float().mean().item())
-            else:
-                rates[name] = 0.0
+            if spikes is not None: rates[name] = float(spikes.float().mean().item())
+            else: rates[name] = 0.0
         return rates
 
     def get_total_spikes(self) -> int:
         return self.total_spike_count
-
-# Backward Compatibility Alias
-SNNCore = SpikingNeuralSubstrate
