@@ -107,12 +107,10 @@ def run_benchmark(config):
     full_train_dataset = get_robust_dataset(data_dir, train=True, transform=transform)
     full_test_dataset = get_robust_dataset(data_dir, train=False, transform=transform)
 
-    # 10000 samples for better signal
     subset_size = min(10000, len(full_train_dataset))
     train_subset = Subset(full_train_dataset, list(range(subset_size)))
     test_subset = Subset(full_test_dataset, list(range(min(1000, len(full_test_dataset)))))
 
-    # Batch Size 32 (Safe for 3000 dim with detach)
     batch_size = 32
     
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, drop_last=True)
@@ -149,7 +147,6 @@ def run_benchmark(config):
 
             if (epoch+1) % 2 == 0 or epoch == config.epochs - 1:
                 stats = model.get_goodness()
-                # Print explicit Goodness
                 v1_g = stats.get("V1_goodness", 0.0)
                 print(f"Run {run+1} Epoch {epoch+1} STATS: V1_Goodness={v1_g:.4f}")
                 logger.info(f"Run {run+1} Epoch {epoch+1}: Goodness={v1_g:.4f}")
@@ -190,7 +187,6 @@ def run_benchmark(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_runs", type=int, default=1)
-    # [RECOMMENDATION] 10 epochs for convergence
-    parser.add_argument("--epochs", type=int, default=10) 
+    parser.add_argument("--epochs", type=int, default=10) # Default to 10
     args = parser.parse_args()
     run_benchmark(args)

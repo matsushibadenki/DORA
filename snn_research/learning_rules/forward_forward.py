@@ -1,6 +1,6 @@
 # snn_research/learning_rules/forward_forward.py
-# Title: FF Rule (Peer Norm)
-# Description: Peer Normalizationによる特徴分散と学習安定化
+# Title: FF Rule (Balanced Norm)
+# Description: Peer Normを0.004に調整し、過学習と過剰抑制のバランスを取る
 
 from typing import Any, Dict, Optional, Tuple
 
@@ -11,7 +11,7 @@ from snn_research.learning_rules.base_rule import PlasticityRule
 
 
 class ForwardForwardRule(PlasticityRule):
-    def __init__(self, learning_rate: float = 0.12, threshold: float = 2.0, **kwargs: Any) -> None:
+    def __init__(self, learning_rate: float = 0.10, threshold: float = 2.0, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.base_lr = learning_rate
         self.threshold = threshold
@@ -31,8 +31,6 @@ class ForwardForwardRule(PlasticityRule):
             return None, {}
 
         self.step_count += 1
-        
-        # LR is now controlled by VisualCortex, but we keep local decay just in case
         current_lr = self.base_lr 
 
         pre_rate = pre_spikes.float()
@@ -50,7 +48,6 @@ class ForwardForwardRule(PlasticityRule):
         else:
             return None, {}
 
-        # Delta Calculation
         post_scaled = post_rate * scale 
         delta_w = torch.matmul(post_scaled.T, pre_rate) 
         
@@ -58,18 +55,15 @@ class ForwardForwardRule(PlasticityRule):
         if batch_size > 0:
             delta_w = (delta_w / batch_size) * current_lr * direction
 
-        # [NEW] Peer Normalization (Weak)
-        # Prevent "winner-take-all" neurons from growing weights indefinitely
-        # Subtract a fraction of the mean activity from the update
+        # [TUNING] Balanced Peer Norm
+        # 0.002 -> 0.004 (Keep goodness in check)
         if phase == "positive":
-            mean_activity = post_rate.mean(dim=0) # (Out,)
-            # Penalty proportional to activity * weight
-            # This encourages neurons that fire too much to lower their weights
-            peer_penalty = 0.03 * mean_activity.unsqueeze(1) * current_weights
+            mean_activity = post_rate.mean(dim=0) 
+            peer_penalty = 0.004 * mean_activity.unsqueeze(1) * current_weights
             delta_w -= peer_penalty
 
-        # Standard Weight Decay
-        delta_w -= 0.0001 * current_weights 
+        # Minimal Weight Decay
+        delta_w -= 0.00001 * current_weights 
 
         logs = {
             "ff_phase": phase,

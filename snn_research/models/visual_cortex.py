@@ -1,6 +1,6 @@
 # snn_research/models/visual_cortex.py
-# Title: Visual Cortex (Phase 23: Precision Max)
-# Description: 4000次元への回帰と学習率減衰による、95%突破の最終構成
+# Title: Visual Cortex (Phase 27: Golden Ratio)
+# Description: Goodness~20を目指す入力スケール16.0と、Sparsity 10%の黄金比設定
 
 import torch
 import torch.nn as nn
@@ -17,23 +17,25 @@ class VisualCortex(nn.Module):
         self.config = config or {}
 
         self.input_dim = self.config.get("input_dim", 784)
-        # [TUNING] Maximize capacity safely
         self.hidden_dim = self.config.get("hidden_dim", 4000)
         self.num_layers = self.config.get("num_layers", 2)
-        self.time_steps = self.config.get("time_steps", 20)
+        # Keep High-Res Integration
+        self.time_steps = self.config.get("time_steps", 30) 
         
         self.config["tau_mem"] = 100.0 
         self.config["threshold"] = 0.5
         
-        # Initial LR
-        self.base_lr = 0.12 # Slightly tuned down from 0.15 for stability at 4000 dims
+        # [TUNING] Optimal Balance
+        self.base_lr = 0.10
         self.learning_rate = self.base_lr
         
         self.ff_threshold = 2.0   
-        self.input_scale = 30.0 # Increased signal
-        self.input_noise_std = 0.05
+        # Scale: 22.0 -> 16.0 (Target Goodness ~20.0)
+        self.input_scale = 16.0 
+        self.input_noise_std = 0.08
         
         self.use_k_wta = True
+        # Sparsity: 0.08 -> 0.10 (Restore capacity)
         self.sparsity = 0.10 
 
         self.substrate = SpikingNeuralSubstrate(self.config, self.device)
@@ -65,11 +67,9 @@ class VisualCortex(nn.Module):
         return x
 
     def _update_learning_rate(self):
-        # Simple Step Decay: Decay every 200 batches
-        decay_factor = 0.95
+        decay_factor = 0.99
         if self.batch_count > 0 and self.batch_count % 200 == 0:
             self.learning_rate *= decay_factor
-            # Apply to rules
             for proj in self.substrate.projections.values():
                 if proj.plasticity_rule:
                     proj.plasticity_rule.base_lr = self.learning_rate
