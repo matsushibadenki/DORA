@@ -1,6 +1,6 @@
 # snn_research/models/visual_cortex.py
-# Title: Visual Cortex (Phase 27: Golden Ratio)
-# Description: Goodness~20を目指す入力スケール16.0と、Sparsity 10%の黄金比設定
+# Title: Visual Cortex (Phase 56: High Purity)
+# Description: スケール18.0、ノイズ0.04で、クリアかつ強力な信号を送る。
 
 import torch
 import torch.nn as nn
@@ -19,24 +19,32 @@ class VisualCortex(nn.Module):
         self.input_dim = self.config.get("input_dim", 784)
         self.hidden_dim = self.config.get("hidden_dim", 4000)
         self.num_layers = self.config.get("num_layers", 2)
-        # Keep High-Res Integration
-        self.time_steps = self.config.get("time_steps", 30) 
+        self.time_steps = self.config.get("time_steps", 30)
         
         self.config["tau_mem"] = 100.0 
-        self.config["threshold"] = 0.5
         
-        # [TUNING] Optimal Balance
-        self.base_lr = 0.10
+        # [TUNING] Static Threshold
+        self.threshold = 0.6
+        self.config["threshold"] = self.threshold
+        
+        # [GUARDRAIL]
+        # Only intervene if Goodness > 30.0
+        self.safety_limit = 30.0
+        self.homeostasis_rate = 0.005
+        
+        self.base_lr = 0.05 
         self.learning_rate = self.base_lr
         
         self.ff_threshold = 2.0   
-        # Scale: 22.0 -> 16.0 (Target Goodness ~20.0)
-        self.input_scale = 16.0 
-        self.input_noise_std = 0.08
+        
+        # [TUNING] 16.0 -> 18.0 (More Energy)
+        self.input_scale = 18.0 
+        
+        # [TUNING] 0.08 -> 0.04 (Less Noise = Cleaner Signal)
+        self.input_noise_std = 0.04
         
         self.use_k_wta = True
-        # Sparsity: 0.08 -> 0.10 (Restore capacity)
-        self.sparsity = 0.10 
+        self.sparsity = 0.08 
 
         self.substrate = SpikingNeuralSubstrate(self.config, self.device)
         self._build_architecture()
@@ -74,6 +82,28 @@ class VisualCortex(nn.Module):
                 if proj.plasticity_rule:
                     proj.plasticity_rule.base_lr = self.learning_rate
 
+    def _apply_guardrail_homeostasis(self, current_goodness: float):
+        """
+        Pure Guardrail.
+        Only raise threshold if Goodness is dangerously high (> 30).
+        Otherwise, keep the static setting.
+        """
+        if current_goodness > self.safety_limit:
+            diff = current_goodness - self.safety_limit
+            adjustment = self.homeostasis_rate * diff
+            adjustment = min(adjustment, 0.05)
+            
+            self.threshold += adjustment
+            if self.threshold > 5.0: self.threshold = 5.0
+            
+            self.substrate.config["threshold"] = self.threshold
+            for group in self.substrate.neuron_groups.values():
+                if hasattr(group, 'v_threshold'):
+                    group.v_threshold = self.threshold
+
+            if self.batch_count % 100 == 0:
+                print(f"[Guardrail] Goodness {current_goodness:.1f} > {self.safety_limit}. Raising Threshold to {self.threshold:.4f}")
+
     def forward(self, x: torch.Tensor, phase: str = "wake", prepped: bool = False, update_weights: bool = True) -> Dict[str, torch.Tensor]:
         self.substrate.reset_state()
         if not prepped: x = self.prepare_input(x)
@@ -105,15 +135,22 @@ class VisualCortex(nn.Module):
                 del step_in, out
 
         mean_rates = {name: s / self.time_steps for name, s in spike_sums.items()}
+        
+        v1_spikes = self.substrate.prev_spikes.get("V1")
+        if v1_spikes is not None:
+            current_goodness = v1_spikes.float().pow(2).sum(dim=1).mean().item()
+        else:
+            current_goodness = 0.0
 
         if update_weights:
             self.batch_count += 1
             self._update_learning_rate()
-            
+            if phase == "wake":
+                self._apply_guardrail_homeostasis(current_goodness)
+
             self.substrate.apply_plasticity_batch(
                 firing_rates=mean_rates,
-                phase=learning_phase,
-                momentum=0.9
+                phase=learning_phase
             )
 
         return {

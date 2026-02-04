@@ -160,11 +160,12 @@ def run_benchmark(config):
             X_train_scaled = scaler.fit_transform(X_train)
             X_test_scaled = scaler.transform(X_test)
 
+            # [TUNING] C=0.1 for stronger regularization
             clf = LogisticRegression(
                 max_iter=5000, 
                 solver='lbfgs', 
                 multi_class='multinomial',
-                C=1.0, 
+                C=0.1, 
                 random_state=seed,
                 n_jobs=-1
             )
@@ -187,6 +188,6 @@ def run_benchmark(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_runs", type=int, default=1)
-    parser.add_argument("--epochs", type=int, default=10) # Default to 10
+    parser.add_argument("--epochs", type=int, default=10)
     args = parser.parse_args()
     run_benchmark(args)

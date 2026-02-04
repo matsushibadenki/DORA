@@ -1,6 +1,6 @@
 # snn_research/core/snn_core.py
-# Title: Spiking Neural Substrate (Phase 21: Brute Force Init)
-# Description: 正規分布初期化(std=2.0)を採用し、初期発火を物理的に保証する
+# Title: Spiking Neural Substrate (Phase 47: Hot Start Restored)
+# Description: バイアス1.0と重みStd=2.0を復活させ、ホメオスタシスの土台を作る
 
 from __future__ import annotations
 
@@ -29,10 +29,12 @@ class SynapticProjection(nn.Module):
         self.plasticity_rule = plasticity_rule
         self.plasticity_state: Dict[str, Any] = {}
         
-        # [CRITICAL FIX] Revert to High-Variance Normal Initialization
-        # Orthogonal(gain=5) -> std approx 0.18 (Too small)
-        # Normal(std=2.0) -> std 2.0 (Strong current)
+        # [CRITICAL RESTORATION] Bias 1.0
+        # Ensures neurons are near firing threshold initially, preventing silence (0.0).
         nn.init.constant_(self.synapse.bias, 1.0)
+        
+        # [CRITICAL RESTORATION] Std 2.0
+        # Strong weights are needed for signal propagation.
         nn.init.normal_(self.synapse.weight, mean=0.0, std=2.0)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -58,13 +60,14 @@ class SynapticProjection(nn.Module):
             )
 
             if delta_w is not None:
+                # No momentum, direct update
                 self.synapse.weight.data.add_(delta_w)
                 self.synapse.weight.data.clamp_(-10.0, 10.0)
 
         return logs
     
     def reset_state(self) -> None:
-        self.plasticity_state.clear()
+        pass
 
 
 class SpikingNeuralSubstrate(nn.Module):
@@ -210,20 +213,6 @@ class SpikingNeuralSubstrate(nn.Module):
     def reset_state(self) -> None:
         self.time_step = 0
         self.total_spike_count = 0
-        self.prev_spikes = {}
-        for group in self.neuron_groups.values():
-            if hasattr(group, 'reset'): group.reset()
-            elif hasattr(group, 'reset_state'): group.reset_state()
-        for proj in self.projections.values():
-            if hasattr(proj, 'reset_state'): proj.reset_state()
         self.prev_spikes = {name: None for name in self.neuron_groups}
-
-    def get_firing_rates(self) -> Dict[str, float]:
-        rates = {}
-        for name, spikes in self.prev_spikes.items():
-            if spikes is not None: rates[name] = float(spikes.float().mean().item())
-            else: rates[name] = 0.0
-        return rates
-
-    def get_total_spikes(self) -> int:
-        return self.total_spike_count
+        for group in self.neuron_groups.values():
+             if hasattr(group, 'reset_state'): group.reset_state()

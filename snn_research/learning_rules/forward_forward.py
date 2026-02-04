@@ -1,17 +1,18 @@
 # snn_research/learning_rules/forward_forward.py
-# Title: FF Rule (Balanced Norm)
-# Description: Peer Normを0.004に調整し、過学習と過剰抑制のバランスを取る
+# Title: FF Rule (Phase 54: Freedom)
+# Description: Peer Normを0.005に半減させ、ニューロンの自律的な活動を許可する
 
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from snn_research.learning_rules.base_rule import PlasticityRule
 
 
 class ForwardForwardRule(PlasticityRule):
-    def __init__(self, learning_rate: float = 0.10, threshold: float = 2.0, **kwargs: Any) -> None:
+    def __init__(self, learning_rate: float = 0.05, threshold: float = 2.0, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.base_lr = learning_rate
         self.threshold = threshold
@@ -55,16 +56,15 @@ class ForwardForwardRule(PlasticityRule):
         if batch_size > 0:
             delta_w = (delta_w / batch_size) * current_lr * direction
 
-        # [TUNING] Balanced Peer Norm
-        # 0.002 -> 0.004 (Keep goodness in check)
+        # [TUNING] 0.01 -> 0.005 (Relaxed constraint)
+        # Allows Goodness to grow naturally
         if phase == "positive":
             mean_activity = post_rate.mean(dim=0) 
-            peer_penalty = 0.004 * mean_activity.unsqueeze(1) * current_weights
+            peer_penalty = 0.005 * mean_activity.unsqueeze(1) * current_weights
             delta_w -= peer_penalty
 
-        # Minimal Weight Decay
-        delta_w -= 0.00001 * current_weights 
-
+        # Weight Decay is still OFF
+        
         logs = {
             "ff_phase": phase,
             "mean_delta": delta_w.abs().mean().item(),
