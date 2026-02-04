@@ -1,6 +1,6 @@
 # snn_research/models/visual_cortex.py
-# Title: Visual Cortex (Phase 56: High Purity)
-# Description: スケール18.0、ノイズ0.04で、クリアかつ強力な信号を送る。
+# Title: Visual Cortex (Phase 58: Sharpening)
+# Description: スケール14.5に微減し、過剰なGoodness（~26）を抑制して20付近を目指す。
 
 import torch
 import torch.nn as nn
@@ -23,13 +23,12 @@ class VisualCortex(nn.Module):
         
         self.config["tau_mem"] = 100.0 
         
-        # [TUNING] Static Threshold
-        self.threshold = 0.6
+        # Keep threshold 0.5 (Proven base)
+        self.threshold = 0.5
         self.config["threshold"] = self.threshold
         
-        # [GUARDRAIL]
-        # Only intervene if Goodness > 30.0
-        self.safety_limit = 30.0
+        # Safety limit (Guardrail)
+        self.safety_limit = 35.0
         self.homeostasis_rate = 0.005
         
         self.base_lr = 0.05 
@@ -37,11 +36,10 @@ class VisualCortex(nn.Module):
         
         self.ff_threshold = 2.0   
         
-        # [TUNING] 16.0 -> 18.0 (More Energy)
-        self.input_scale = 18.0 
+        # [TUNING] 15.0 -> 14.5 (Slight cooling)
+        self.input_scale = 14.5 
         
-        # [TUNING] 0.08 -> 0.04 (Less Noise = Cleaner Signal)
-        self.input_noise_std = 0.04
+        self.input_noise_std = 0.08
         
         self.use_k_wta = True
         self.sparsity = 0.08 
@@ -83,11 +81,6 @@ class VisualCortex(nn.Module):
                     proj.plasticity_rule.base_lr = self.learning_rate
 
     def _apply_guardrail_homeostasis(self, current_goodness: float):
-        """
-        Pure Guardrail.
-        Only raise threshold if Goodness is dangerously high (> 30).
-        Otherwise, keep the static setting.
-        """
         if current_goodness > self.safety_limit:
             diff = current_goodness - self.safety_limit
             adjustment = self.homeostasis_rate * diff

@@ -1,12 +1,13 @@
 # ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
-# 日本語タイトル: Artificial Brain Integrated v16.8 (Robust Reset)
+# 日本語タイトル: Artificial Brain Integrated v17.0 (Biological Time Aware)
 # 目的・内容:
-#   - reset_state() を強化し、apply()を使って全サブモジュールの状態を強制リセット。
-#   - これによりSNNの計算グラフの肥大化（メモリリーク）を完全に防止する。
+#   - process_tick()の実装による、時間経過に伴う代謝と自発的思考。
+#   - reset_state()によるメモリリーク防止機能の維持。
 
 import torch
 import torch.nn as nn
 import logging
+import random
 from typing import Dict, Any, Optional, Union, List
 
 # --- Core Architectures ---
@@ -42,7 +43,8 @@ logger = logging.getLogger(__name__)
 
 class ArtificialBrain(nn.Module):
     """
-    Artificial Brain v16.8
+    Artificial Brain v17.0
+    Supports biological time ticking and metabolic energy consumption.
     """
 
     def __init__(self, config: Dict[str, Any], device_name: Optional[str] = None):
@@ -52,10 +54,8 @@ class ArtificialBrain(nn.Module):
         # [Fix] Handle 'auto' device properly
         target_device = device_name
         if not target_device or target_device == "auto" or str(target_device) == "None":
-            # Try to get from config, default to None to check later
             target_device = config.get("device")
 
-        # Check if resolution is needed (auto or None or "None")
         if not target_device or target_device == "auto" or str(target_device) == "None":
             if torch.cuda.is_available():
                 target_device = "cuda"
@@ -70,6 +70,10 @@ class ArtificialBrain(nn.Module):
         self.plasticity_enabled = False
         self.sleep_cycle_count = 0
         self.d_model = config.get("model", {}).get("d_model", 256)
+        
+        # 時間経過によるパラメータ
+        self.boredom_counter = 0.0
+        self.boredom_threshold = 10.0 # 秒数：これ以上入力がないと自発的思考を開始
 
         # 1. 物理層
         self._init_core_brain()
@@ -123,7 +127,7 @@ class ArtificialBrain(nn.Module):
         # 3. メンテナンス層
         self.sleep_manager = SleepConsolidator(substrate=self.core)
 
-        logger.info(f"🚀 Artificial Brain v16.8 initialized on {self.device}.")
+        logger.info(f"🚀 Artificial Brain v17.0 initialized on {self.device}.")
 
     @property
     def cycle_count(self) -> int:
@@ -133,10 +137,58 @@ class ArtificialBrain(nn.Module):
     def device_name(self) -> str:
         return str(self.device)
 
+    # --- New Biological Methods ---
+
+    def process_tick(self, delta_time: float):
+        """
+        時間経過（Tick）を処理する。入力がないアイドル時にOSから呼ばれる。
+        1. エネルギー消費（基礎代謝）
+        2. 退屈（Boredom）の更新と自発的思考
+        """
+        if not self.is_awake:
+            return
+
+        # 1. 基礎代謝 (Time-based Metabolism)
+        # 1秒あたり1.0エネルギーを消費すると仮定
+        metabolic_rate = 1.0 
+        energy_cost = metabolic_rate * delta_time
+        
+        # Astrocyteのエネルギーを直接減らす（メソッドがない場合のフォールバック）
+        if hasattr(self.astrocyte, "consume_energy"):
+             self.astrocyte.consume_energy(energy_cost)
+        else:
+             # 直接属性操作
+             self.astrocyte.current_energy = max(0.0, self.astrocyte.current_energy - energy_cost)
+        
+        # 2. 退屈の更新
+        self.boredom_counter += delta_time
+        
+        # 3. 自発的思考 (Internal Monologue) のトリガー
+        if self.boredom_counter > self.boredom_threshold:
+            self._trigger_spontaneous_thought()
+            self.boredom_counter = 0.0 # リセット
+
+    def _trigger_spontaneous_thought(self):
+        """退屈時に呼び出され、独り言や過去の回想を行う"""
+        logger.info("💭 Brain is bored. Triggering spontaneous thought...")
+        
+        # ランダムなトピックまたは状態報告
+        topics = [
+            "静かですね。",
+            f"お腹が空いてきました... (Energy: {self.astrocyte.current_energy:.1f})",
+            "新しいことを学びたいです。",
+            "システムログを整理しています..."
+        ]
+        thought = random.choice(topics)
+        
+        # 自身に入力として与える（思考ループ）
+        self.process_step(f"[Internal Monologue] {thought}")
+
+
+    # --- Existing Methods ---
+
     def run_cycle(self, sensory_input: Any, phase: str = "wake") -> Dict[str, Any]:
-        """
-        Legacy wrapper for process_step.
-        """
+        """Legacy wrapper"""
         return self.process_step(sensory_input)
 
     def _init_core_brain(self):
@@ -147,7 +199,6 @@ class ArtificialBrain(nn.Module):
             layer_sizes = model_conf.get("network", {}).get(
                 "layer_sizes", [784, 512, 256, self.d_model]
             )
-            # [Fix] input_shape is required
             self.core = BioPCNetwork(
                 input_shape=(784,), layer_sizes=layer_sizes, config=self.config
             )
@@ -158,7 +209,6 @@ class ArtificialBrain(nn.Module):
                 num_layers=model_conf.get("num_layers", 6),
             )
         else:
-            # Fallback default
             self.core = BioPCNetwork(
                 input_shape=(784,),
                 layer_sizes=[64, 128, self.d_model],
@@ -177,17 +227,13 @@ class ArtificialBrain(nn.Module):
             return self.rag_system.knowledge_base
         return []
 
-    # [Fix] 再帰的リセットの実装
     def reset_state(self):
         """
         全モジュールの内部状態（電位、キャッシュ）をリセットし、計算グラフを切断する。
         """
-
         def _recursive_reset(module):
-            # 'reset_state' メソッドを持つ場合は呼び出す
             if hasattr(module, "reset_state") and callable(module.reset_state):
                 module.reset_state()
-            # GlobalWorkspace等の 'reset' も呼び出す (ただし自分自身は除く)
             elif (
                 hasattr(module, "reset")
                 and callable(module.reset)
@@ -195,18 +241,14 @@ class ArtificialBrain(nn.Module):
             ):
                 module.reset()
 
-        # Coreモデル内の全サブモジュールに適用
         self.core.apply(_recursive_reset)
 
-        # ワークスペースのリセット
         if hasattr(self.workspace, "reset"):
             self.workspace.reset()
 
-        # 海馬のリセット
         if hasattr(self.hippocampus, "reset_state"):
             self.hippocampus.reset_state()
 
-        # デバイスキャッシュのクリア (メモリ断片化防止)
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
         elif self.device.type == "mps":
@@ -215,6 +257,10 @@ class ArtificialBrain(nn.Module):
     def process_step(
         self, sensory_input: Union[torch.Tensor, str, Dict[str, Any]]
     ) -> Dict[str, Any]:
+        
+        # 入力があったので退屈カウンターをリセット
+        self.boredom_counter = 0.0
+
         if not self.is_awake:
             return {"status": "sleeping", "output": None}
 
@@ -240,7 +286,6 @@ class ArtificialBrain(nn.Module):
                 elif "last_hidden_state" in model_output:
                     features = model_output["last_hidden_state"]
                 else:
-                    # Fallback: take first tensor found
                     features = next(
                         (
                             v
@@ -309,6 +354,9 @@ class ArtificialBrain(nn.Module):
         selected_action = self.basal_ganglia.select_action(
             external_candidates=action_candidates, emotion_context=current_drives
         )
+        
+        # 思考したコストとしてエネルギー消費 (思考1回あたり2.0消費)
+        self.astrocyte.consume_energy(2.0)
 
         return {
             "output": output_tensor,
@@ -366,7 +414,7 @@ class ArtificialBrain(nn.Module):
         self.astrocyte.clear_fatigue(50.0)
 
         stats = self.sleep_manager.perform_maintenance(self.sleep_cycle_count)
-        logger.info(f"Sleep Maintenance: {stats}")
+        logger.info(f"Sleep Maintenance Report: {stats}")
 
     def wake_up(self):
         logger.info(">>> 🌅 Wake Up <<<")

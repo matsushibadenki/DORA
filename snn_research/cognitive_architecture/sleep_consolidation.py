@@ -1,14 +1,14 @@
 # ファイルパス: snn_research/cognitive_architecture/sleep_consolidation.py
-# 日本語タイトル: Sleep Consolidation & Structural Plasticity Manager
+# 日本語タイトル: Sleep Consolidation & Learning Manager
 # 目的・内容:
-#   睡眠フェーズにおける脳の物理的メンテナンスを行う。
-#   - Synaptic Pruning (刈り込み): 弱い結合の削除
-#   - Synaptogenesis (生成): 新しい結合のランダム生成
-#   - Homeostasis (恒常性): 重みの正規化
+#   - 睡眠フェーズにおける脳の物理的・論理的メンテナンス。
+#   - Synaptic Pruning (物理的な結合の削除)
+#   - Memory Consolidation (LoRA等による記憶の定着)
 
 import torch
 import torch.nn as nn
 import logging
+import time
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -16,17 +16,14 @@ logger = logging.getLogger(__name__)
 
 class SleepConsolidator:
     """
-    Manages structural plasticity during sleep cycles.
+    Manages structural plasticity and memory consolidation during sleep cycles.
     """
 
     def __init__(self, substrate: Optional[nn.Module] = None, **kwargs: Any):
         if substrate is None:
-            # Fallback for legacy calls passing target_brain_model
             substrate = kwargs.get("target_brain_model")
 
         if substrate is None:
-            # If still None, maybe raise warning or handle gracefully
-            # For now, create a dummy module to avoid attribute errors if not critical
             logger.warning("SleepConsolidator initialized without substrate!")
             substrate = nn.Module()
 
@@ -41,14 +38,16 @@ class SleepConsolidator:
         """
         睡眠中のメンテナンスを実行する。
         """
-        stats = {"pruned": 0, "created": 0}
+        stats = {"pruned": 0, "created": 0, "learned_samples": 0}
 
-        # 10サイクルに1回実行（頻度調整）
-        if cycle_count % 10 != 0:
-            return stats
+        # 1. 物理的メンテナンス (10サイクルに1回実行)
+        if cycle_count % 10 == 0:
+            stats["pruned"] = self._synaptic_pruning()
+            stats["created"] = self._synaptogenesis()
 
-        stats["pruned"] = self._synaptic_pruning()
-        stats["created"] = self._synaptogenesis()
+        # 2. 論理的メンテナンス (記憶の学習)
+        # 毎回実行、もしくはエネルギーに余裕がある時に実行
+        stats["learned_samples"] = self._run_lora_training()
 
         return stats
 
@@ -91,3 +90,22 @@ class SleepConsolidator:
 
                 created_count += int(birth_mask.sum().item())
         return created_count
+
+    def _run_lora_training(self) -> int:
+        """
+        [NEW] 睡眠学習プロセス (Dreaming)
+        短期記憶バッファから重要なエピソードを取り出し、LoRAアダプタ等に追加学習を行う。
+        現在は動作検証用のモック実装。
+        """
+        logger.info("💤 Dreaming... (Running background learning task)")
+        
+        # 本来はここで:
+        # 1. Hippocampus.get_replay_buffer()
+        # 2. Loss計算とBackward()
+        # 3. Optimizer.step()
+        
+        # 処理時間をシミュレート（深い眠り）
+        time.sleep(0.1) 
+        
+        # 学習したサンプル数を返す
+        return 16 # Batch size dummy

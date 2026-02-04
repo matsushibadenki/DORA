@@ -1,6 +1,6 @@
 # snn_research/learning_rules/forward_forward.py
-# Title: FF Rule (Phase 54: Freedom)
-# Description: Peer Normを0.005に半減させ、ニューロンの自律的な活動を許可する
+# Title: FF Rule (Phase 58: Tightened)
+# Description: Peer Norm 0.008で過剰な活動をトリミングし、精度を高める。
 
 from typing import Any, Dict, Optional, Tuple
 
@@ -56,14 +56,13 @@ class ForwardForwardRule(PlasticityRule):
         if batch_size > 0:
             delta_w = (delta_w / batch_size) * current_lr * direction
 
-        # [TUNING] 0.01 -> 0.005 (Relaxed constraint)
-        # Allows Goodness to grow naturally
+        # [TUNING] 0.005 -> 0.008 (Sharpening features)
         if phase == "positive":
             mean_activity = post_rate.mean(dim=0) 
-            peer_penalty = 0.005 * mean_activity.unsqueeze(1) * current_weights
+            peer_penalty = 0.008 * mean_activity.unsqueeze(1) * current_weights
             delta_w -= peer_penalty
 
-        # Weight Decay is still OFF
+        # Weight Decay OFF
         
         logs = {
             "ff_phase": phase,
