@@ -1,6 +1,6 @@
 # snn_research/models/visual_cortex.py
-# Title: Visual Cortex (Phase 58: Sharpening)
-# Description: スケール14.5に微減し、過剰なGoodness（~26）を抑制して20付近を目指す。
+# Title: Visual Cortex (Phase 76: Negative Hunter)
+# Description: ff_threshold 2.0に戻し、Peer Norm緩和(0.004)で正解データをさらに伸ばす。
 
 import torch
 import torch.nn as nn
@@ -23,22 +23,27 @@ class VisualCortex(nn.Module):
         
         self.config["tau_mem"] = 100.0 
         
-        # Keep threshold 0.5 (Proven base)
+        # Threshold 0.5 (Proven Best)
         self.threshold = 0.5
         self.config["threshold"] = self.threshold
         
-        # Safety limit (Guardrail)
-        self.safety_limit = 35.0
+        # Loose Guardrail (> 40.0)
+        self.safety_limit = 40.0
         self.homeostasis_rate = 0.005
         
+        # Base LR 0.05
         self.base_lr = 0.05 
         self.learning_rate = self.base_lr
         
+        # [CRITICAL RESTORE] 25.0 -> 2.0
+        # The low threshold forces aggressive suppression of negative data,
+        # which is the key driver of performance in this architecture.
         self.ff_threshold = 2.0   
         
-        # [TUNING] 15.0 -> 14.5 (Slight cooling)
-        self.input_scale = 14.5 
+        # Scale 16.0 (Proven Optimal)
+        self.input_scale = 16.0 
         
+        # Noise 0.08 (Resonance)
         self.input_noise_std = 0.08
         
         self.use_k_wta = True
@@ -73,14 +78,21 @@ class VisualCortex(nn.Module):
         return x
 
     def _update_learning_rate(self):
-        decay_factor = 0.99
-        if self.batch_count > 0 and self.batch_count % 200 == 0:
-            self.learning_rate *= decay_factor
+        # Slower Decay (Phase 72)
+        decay_step = 300
+        decay_rate = 0.99
+        
+        if self.batch_count > 0 and self.batch_count % decay_step == 0:
+            self.learning_rate *= decay_rate
+            
             for proj in self.substrate.projections.values():
                 if proj.plasticity_rule:
                     proj.plasticity_rule.base_lr = self.learning_rate
 
     def _apply_guardrail_homeostasis(self, current_goodness: float):
+        """
+        Loose Guardrail (> 40.0).
+        """
         if current_goodness > self.safety_limit:
             diff = current_goodness - self.safety_limit
             adjustment = self.homeostasis_rate * diff
