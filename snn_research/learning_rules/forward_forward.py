@@ -1,6 +1,6 @@
 # snn_research/learning_rules/forward_forward.py
-# Title: FF Rule (Phase 69: Symmetric)
-# Description: 負の学習ブーストを撤廃し、対称的な学習に戻す。Peer Norm 0.005維持。
+# Title: FF Rule (Phase 76: Relaxed Peer Norm)
+# Description: Peer Norm 0.004。正解データの活動を阻害せず、FFルールでのみ厳格に選別する。
 
 from typing import Any, Dict, Optional, Tuple
 
@@ -12,7 +12,7 @@ from snn_research.learning_rules.base_rule import PlasticityRule
 
 
 class ForwardForwardRule(PlasticityRule):
-    def __init__(self, learning_rate: float = 0.06, threshold: float = 2.0, **kwargs: Any) -> None:
+    def __init__(self, learning_rate: float = 0.05, threshold: float = 2.0, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.base_lr = learning_rate
         self.threshold = threshold
@@ -40,17 +40,12 @@ class ForwardForwardRule(PlasticityRule):
         goodness = post_rate.pow(2).sum(dim=1, keepdim=True)
         probs = torch.sigmoid(goodness - self.threshold)
         
-        # [REVERT] Symmetric Learning
         if phase == "positive":
             scale = 1.0 - probs
             direction = 1.0
-            phase_factor = 1.0
         elif phase == "negative":
             scale = probs
             direction = -1.0
-            # [REVERT] 1.2 -> 1.0
-            # Too much suppression was hurting the model's ability to retain features.
-            phase_factor = 1.0
         else:
             return None, {}
 
@@ -59,12 +54,13 @@ class ForwardForwardRule(PlasticityRule):
         
         batch_size = pre_rate.shape[0]
         if batch_size > 0:
-            delta_w = (delta_w / batch_size) * current_lr * direction * phase_factor
+            delta_w = (delta_w / batch_size) * current_lr * direction
 
-        # Peer Norm 0.005
+        # [TUNING] 0.005 -> 0.004
+        # Reducing global inhibition to let strong features shine.
         if phase == "positive":
             mean_activity = post_rate.mean(dim=0) 
-            peer_penalty = 0.005 * mean_activity.unsqueeze(1) * current_weights
+            peer_penalty = 0.004 * mean_activity.unsqueeze(1) * current_weights
             delta_w -= peer_penalty
 
         # Weight Decay is OFF
