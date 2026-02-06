@@ -1,216 +1,50 @@
-# 🎯 DORA─Neuromorphic Research OS - Unified Objectives (v2.2)─
+# **Project Objective: Why DORA? 🎯**
 
----
+## **1\. The Problem with Current AI**
 
-## 📌 Most Important Constraints (Non-Negotiable)
+現在の人工知能（Deep Learning / Transformer）は、確かに強力ですが、生物学的知能とは決定的に異なる「工学的な嘘」の上に成り立っています。
 
-本プロジェクトでは、以下を**絶対制約（設計上の禁止事項）**とする。
+* **静的である:** 学習（Training）と推論（Inference）が完全に分離されている。世界は常に変化しているのに、AIの重みは固定されている。  
+* **効率が悪い:** 脳が20Wで動作するのに対し、同等のLLMは数kWを消費する。これは、「何も起きていない場所でも計算している（密行列演算）」ためである。  
+* **時間がない:** RNN以外、時間の概念が空間（シーケンス長）に置き換えられている。「タイミング」による情報処理が行われていない。
 
-- ❌ **誤差逆伝播法（Backpropagation）を使用しない**
-- ❌ **行列演算（Dense / GEMM / Attention行列）を前提としない**
-- ❌ **GPU依存の計算モデルにしない**
+## **2\. The Solution: DORA's Approach**
 
-> これらは「最適化の選択肢」ではなく  
-> **生物学的妥当性・ハードウェア適合性を守るための原理制約**である。
-  
-また、以下を**絶対優先（設計上の優先事項）**とする。
-- ⭕️ **実装に迷った際は生物の原理に近いものを優先する**
+DORA (Distributed Online Reactive Architecture) は、これらの問題を解決するために、脳の物理的な制約をあえて導入します。
 
----
+### **「計算しない」ことによる高速化**
 
-## 📌 Mission Statement
+行列演算 ![][image1] は、入力 ![][image2] の大半がゼロであっても、全ての要素に対して掛け算と足し算を行います。
 
-本プロジェクトの目的は、
+DORAは、**「スパイク（変化）が届いたニューロンだけが更新される」** イベント駆動型アーキテクチャを採用します。
 
-**人間の脳が持つ**
-- 高いエネルギー効率
-- 局所的可塑性
-- 時間依存ダイナミクス
-- 自律的な学習・安定化
+脳の発火率は非常に低い（スパースである）ため、これにより計算量を劇的に削減できます。
 
-を計算原理として再構成し、
+### **「予測」による学習**
 
-> **SNN（Spiking Neural Network）を中核とした  
-> Neuromorphic Research OS を構築すること**
+DORAは、外部からの教師あり学習（Backpropagation）を行いません。
 
-である。
+代わりに、**「自らの予測と、実際の入力とのズレ（Surprise）」** を最小化するように、局所的にシナプスを変形させます。
 
-### 本プロジェクトが目指すもの
-- ANNを「模倣・変換」することではない
-- AGI完成を宣言することではない
-- **脳型計算の実験・観測・比較を可能にする基盤**を作ること
+これは、生物が環境に適応するメカニズムそのものです。
 
-### 達成目標（実務的定義）
-- **制約（局所則・ハードウェア）下で計算が成立することの実証**
-- **継続学習、睡眠効果などの「脳的現象」の観測・再現**
-- **コンシューマーハードウェア上で動作する**
+### **「OS」としての脳**
 
-**Current Status:**  
-✅ Phase 1 完了  
-🚧 Phase 2 進行中（学習安定性が最大課題）
+我々は、SNNを単なるパターン認識器ではなく、**コンピューティングシステムそのもの（Operating System）** として捉え直します。
 
----
+* ニューロン \= プロセス / スレッド  
+* スパイク \= メッセージパッシング / 割り込み  
+* エネルギー \= 計算リソース（CPU時間、電力）  
+* 睡眠 \= メモリのデフラグ、ガベージコレクション
 
-## 🛠️ Coding Rules (v1.1)
+## **3\. Ultimate Goal**
 
-1. **ファイル管理**
-   - `workspace/` 以外にキャッシュ・データ・モデルを生成しない
-2. **ディレクトリ整合性**
-   - 新規ファイルは既存構造の意味論を壊さない
-3. **計算原則**
-   - 明示的な時間ステップを持たない処理は禁止
-   - 行列積を暗黙に含むAPI使用は禁止
+DORAの最終目標は、特定のタスク（画像認識や翻訳）を解くことではありません。
 
----
+**「自律的に環境と相互作用し、エネルギーを維持しながら、経験から学習し続ける人工生命体」** を、一般的なコンピュータ（CPU）上で動作させることです。
 
-## 📊 Phase 1: Core System Validation（完了）
+*"We are building a brain, not a matrix multiplier."*
 
-### Phase 1の位置づけ
-Phase 1 は「性能競争」ではなく、
+[image1]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAC4AAAAYCAYAAACFms+HAAADlklEQVR4Xr1UTYhNYRg+x8wwWAhxc8+d75zvzpW6LOSKJFlIzYLyk59RNqwMKwtFkY2/jd+URjREytDIgiQWsmKhTFMKg1nLQmIhM573nO+c853v59xzR3mad873Pe/z/nzvuedznH+FqxIpEpdNI/OuSWYkm6DlgCyKhEeaIkonX6YMIAfyJHKUTRO21HqEzEvIbJrB1k3Bwzh2r3wMm6Y5bP0lMJIRbC7bweQz5yCjoY3vs2Gf+Z9933+P9Sien2C8VCrNxHOEhXsGnz8aBMHbSqUynWKx3seYPyZiya5nM+f2OjmogYyxUyg8gWYOR+5UAX6QfLA+bNsShxPGbQP/Ac8GQkSQmr0AbFOXSZMAxQ9gchNo4FDW4zrgL0eH4r1qMHjyrcqy/xEovktM/LTMc85L4L+Lie+P2Kh7HLIOG0jV+tiMAyuiUWDj6ffaI5rrl3n8vvvBXSMf1kdjnhKBu+eVvYokT2GtlOuK4Ib9LMVQ1tUW1qYRVavV5oFbmQhicB6sEM0NxhwFU9NIsD30MXYu9fGegAfH4711nAURRzUajQ7UvQu7gZoXYcOoewzPq7Ah2FmphOvgpqixaOLPYhbBD7FfgMD1ovGBKMZtx/qJVy7PSDO0BpseNc/AdtK6Xq9PpboY0AvP8+biZvuN/fNUjSxofA6JYG9Egk1YH6ECXV1dy+nD5TgI+fzwQ2a7tV9n9GcE8vXCXuHAi1VfCBEYvlWRh7Sip72kwPMg53yREuNOgWMcDY2Jkz5FoU7yIkFVJHiJ9Wy8mcdJmAWJUzSB2Dsixx5JlgoMW2j7ohjGMwIVEH2D/aCToekdMU/NIngCUx8BfwH71Wox41rahm+UsQ2NxrKOlNfFMoMB3UcvX1LG0DQBzX0UU3kUc0Lqouk/4H/CbtvizVC6SdbG1unbOYkaW7BuE4O8FTvRw1bhywLka9g4xw1j8H2F/Qp4EKi+VqCfOWVwU60Vg+vDATbSd0UfK2mq1eos8ENYt2tJ6KaA82aGFCLw72AnVF6DMlEdNt5xuru759NNBjuPWpdgm2Gf0dcV2ANcEkvUmDAdHGvot5gwUg1MuqccX3/22hkUlGnApHm0cuk26kRPntgKTDZzCD3YmFeXORopB2bnZUYqaCp17JoilXToITl5bOdsGTmROa4E8oCLQxXbsiQDUAOyyPfKyFfKXpvSxhugHyZnGyE5sAIjqUCJlQcn/yf8BfU1rlVxW+ikAAAAAElFTkSuQmCC>
 
-> **T=1ネイティブSNNが  
-> 実用的な速度・消費電力で動作することの検証**
-
-を目的とした。
-
-### 達成指標
-
-| 指標 | 目標 | 達成値 | 評価 |
-|----|----|----|----|
-| 推論レイテンシ | < 10ms | **3.02ms** | ✅ |
-| 消費電力 | ANN比 1/50 | 1/20〜1/100 | ✅ |
-| 学習安定性 | ≥ 95% | **81.25%** | ⚠️ |
-
----
-
-## 🚀 Phase 2: Beyond ANN (進行中)
-
-### Phase 2の再定義（重要）
-
-Phase 2 の目的は  
-**「ANNを超えること」そのものではない**。
-
-> **ANNと同等以上の精度を  
-> ANNでは不可能な制約条件下で達成すること**
-
-が本質である。
-
----
-
-## 🎯 Phase 2 – Three Axes of Research
-
-### Axis 1: Cognitive Capability Validation
-
-- **Stability**: 学習が破綻しないこと (Target > 95% stability)
-- **Adaptability**: 未知データへの適応能力
-- **Benchmark Validity**: CIFAR-10 / ImageNet は「この制約でも解ける」という**証明**として使用
-
-※ ANNとの精度競争自体が目的ではない。
-　 「厳しい制約があっても、知能は創発するか？」への回答として数値を扱う。
-
----
-
-### Axis 2: Efficiency Dominance
-
-| 指標 | 目標 |
-|----|----|
-| エネルギー効率 | ANN比 **1/100**（同精度） |
-| 推論レイテンシ | < 5ms |
-| 反射的応答 | < 1ms |
-| 発火率 | < 5% active neurons |
-| メモリ使用量 | ANN比 1/10 |
-
----
-
-### Axis 3: Capability Extension (ANNが苦手な領域)
-
-- 継続学習（破壊的忘却なし）
-- Few-shot 学習（10サンプルで90%）
-- 不確実性推定（メタ認知）
-- 計算量の自律的調整（System 1 / 2 切替）
-
----
-
-## 🧠 Learning Principles (最重要設計原理)
-
-以下は**第一級学習機構**とする：
-
-- **STDP / R-STDP**
-- **Forward-Forward**
-- **Active Inference**
-- **局所誤差信号・蒸留**
-
-以下は**補助的役割**に限定する：
-
-- Surrogate Gradient（安定化用途）
-- ANN / LLM（教師・比較・解析用）
-
----
-
-## 🔬 Phase 2 最大のボトルネック
-
-| 項目 | 状態 | 優先度 |
-|----|----|----|
-| 学習安定性 | 81.25% | 🔴 最優先 |
-| 再現性 | 不十分 | 🔴 |
-| 精度 | ほぼ到達 | 🟡 |
-| 効率 | 達成済 | 🟢 |
-
-**結論**:  
-Phase 2 は「新機能追加」ではなく  
-**学習則と時間ダイナミクスの徹底的な安定化フェーズ**である。
-
----
-
-## 🧪 Success Criteria (Phase 2 完了条件)
-
-以下 **すべて** を満たした時点で Phase 2 完了とする。
-
-1.  **現象の観測 (Phenomena)**
-    *   学習の安定化（Stability > 95%）が達成されている
-    *   睡眠による記憶定着・構造変化が観測できる
-    *   破壊的忘却の抑制が確認できる
-
-2.  **能力の実証 (Capability)**
-    *   CIFAR-10 等で十分な精度が出ること（ANN対比で崩壊していないこと）
-    *   Few-shot 学習が機能していること
-
-3.  **効率 (Efficiency)**
-    *   Sparse coding が成立している（発火率 < 5%）
-    *   リアルタイム動作が可能である
-
----
-
-## 📜 Conclusion
-
-このプロジェクトは、
-
-- 「AGIを作った」と主張するためのものではない
-- 「既存ANNを置き換える」ためだけのものでもない
-
-**脳型計算が成立する条件と限界を、  
-実装と実験を通して明らかにする研究基盤**である。
-
-成功とは、
-> **制約を守ったまま、  
-> それでもANNに勝てることを示すこと**
-
-である。
-
----
-
-## 🧭 Implementation Priority Order
-
-迷った場合、以下の順序を厳守する：
-
-1. **学習安定性**
-2. **時間表現の正確さ**
-3. **局所可塑性**
-4. 精度
-5. エネルギー効率
-6. スパース性
-7. 自律性・社会性
-
-> Phase 2 における最大の敵は  
-> 「精度不足」ではなく  
-> **不安定な学習である**。
+[image2]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAsAAAAYCAYAAAAs7gcTAAABWElEQVR4XnVQO07EMBD1iuXTUSAoyGbGzgYhBQqkFJRbUFOwNPR0W3IASiQaQNAgUSFRISEQB6DgClwALsAFKJbnJGsmEzOS7Tdv3ht7bIzpGR/1XoOAA98wUhRA1NBK/hPp3lGRAh5H3B2nTHWt3uMGWYgrJBX2wEizNshQNsUIt7Vuh5j28jxf9GS+ka86a3dbN5RlOW+dfbTW3jPzNRN/ENEpM90BP4O7CI0hOsc68mlRFAsQTZG/ryfJCoQ/WG9NX2PQ5XLmBN5CcQrDsSeI+cQ5uxnEMiCa4GqI2ela56cgeoLhS0rEh/T6+IEziMbAczi/sR5mIuBDmMdVjkFG1RuJJ3jvvsd+YF/LsmzZ/wZgvxIPs+Ea/vIVgisIbzDQAc5P3HbLRC9pmm7XLxAhB4J5aTBIE4/lPH+hBpU1MZ9gQ9olG0YVQqir4qF6t0BooHYpatJfyWMyjf2I8jgAAAAASUVORK5CYII=>

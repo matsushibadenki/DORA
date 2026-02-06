@@ -1,7 +1,6 @@
 # snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain v18.6 (Compat & Mypy)
-# Description: 
-#   run_cognitive_cycle, sleep_cycleなどの旧APIラッパーを追加。
+# Title: Artificial Brain v18.7 (Kernel Sleep Link)
+# Description: Brainの睡眠サイクルとDORAカーネルの睡眠モードを連動させる。
 
 import torch
 import torch.nn as nn
@@ -99,7 +98,7 @@ class ArtificialBrain(nn.Module):
         self.thinking_engine = self.core_torch
         self.cortex = self
 
-        logger.info(f"🚀 Artificial Brain v18.6 initialized on {self.device}.")
+        logger.info(f"🚀 Artificial Brain v18.7 initialized on {self.device}.")
 
     def _init_core_brain_torch(self):
         model_conf = self.config.get("model", {})
@@ -186,6 +185,8 @@ class ArtificialBrain(nn.Module):
         pass
     
     def reset_state(self):
+        # 睡眠時でもここは呼ばれるが、reset_stateはキューを空にするだけでトポロジーは消さない。
+        # Pruningの状態も保持される。
         if self.use_kernel and self.kernel_substrate:
             self.kernel_substrate.reset_state()
         if hasattr(self.core_torch, "reset_state"):
@@ -211,7 +212,13 @@ class ArtificialBrain(nn.Module):
 
     def process_step(self, sensory_input: Union[torch.Tensor, str, Dict[str, Any]]) -> Dict[str, Any]:
         self.boredom_counter = 0.0
-        if not self.is_awake: return {"status": "sleeping"}
+        # 睡眠中でも、OSが意図的に入力を入れた場合は「夢（Replay）」として処理させるため
+        # 単純リターンはせず、睡眠モードのカーネルを実行させる
+        if not self.is_awake and self.use_kernel:
+            # 睡眠中もカーネルは動かす（Pruningのため）
+            pass
+        elif not self.is_awake:
+            return {"status": "sleeping"}
 
         if self.astrocyte.current_energy <= 5.0:
             return {"status": "fatigued", "output": None}
@@ -276,7 +283,6 @@ class ArtificialBrain(nn.Module):
             "executed_modules": ["Core", "GlobalWorkspace", "PFC", "BG"]
         }
 
-    # [Fix] Legacy API Wrappers
     def run_cognitive_cycle(self, sensory_input: Any) -> Dict[str, Any]:
         return self.process_step(sensory_input)
 
@@ -288,18 +294,28 @@ class ArtificialBrain(nn.Module):
         return []
 
     def sleep(self): 
-        logger.info(">>> 💤 Sleep Cycle Initiated <<<")
+        logger.info(">>> 💤 Sleep Cycle Initiated (Consolidating & Pruning) <<<")
         self.is_awake = False
         self.sleep_cycle_count += 1
-        self.reset_state()
+        
+        # ★ Kernelのモード切替
+        if self.use_kernel and self.kernel_substrate:
+            self.kernel_substrate.kernel.set_sleep_mode(True)
+            # キューはリセットするが、トポロジーは維持
+            self.kernel_substrate.reset_state()
+            
         self.astrocyte.replenish_energy(500.0)
         self.astrocyte.clear_fatigue(50.0)
         if self.sleep_manager: self.sleep_manager.perform_maintenance(self.sleep_cycle_count)
 
     def wake_up(self): 
-        logger.info(">>> 🌅 Wake Up <<<")
+        logger.info(">>> 🌅 Wake Up (Synaptogenesis Enabled) <<<")
         self.is_awake = True
-
+        
+        # ★ Kernelのモード切替
+        if self.use_kernel and self.kernel_substrate:
+            self.kernel_substrate.kernel.set_sleep_mode(False)
+            
     def set_plasticity(self, active: bool): self.plasticity_enabled = active
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:

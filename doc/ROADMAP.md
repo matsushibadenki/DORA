@@ -1,55 +1,47 @@
-# **DORA Project Roadmap 🗺️**
+# **DORA Development Roadmap 🗺️**
 
-我々の目標は、\*\*「計算機上に、生物学的な制約を持った『心』を発生させること」\*\*です。
+"No Matrix, No BP, No GPU" を実現したDORAカーネルを基盤とし、真の「Neuromorphic OS」へと進化させるためのロードマップ。
 
-現在の「Python版イベント駆動カーネル（v1.x）」は、そのための概念実証（PoC）に過ぎません。
+## **✅ Phase 1: Proof of Concept (Completed)**
 
-## **📍 Current Status: Phase 1 (Completed)**
+**目標:** 行列演算を使わないイベント駆動SNNの実証。
 
-* ✅ **Event-Driven Kernel:** 行列演算を廃止し、スパイクイベントによる計算を実現。  
-* ✅ **E/I Balance:** 興奮性・抑制性ニューロンの導入による活動の安定化。  
-* ✅ **Visualization:** 脳活動（ラスタープロット）の可視化。  
-* ✅ **Neuromorphic OS Integration:** 同期・非同期タスク処理の実装。
+* \[x\] **Event-Driven Simulator:** Pythonによる DORAKernel の実装。行列積を廃止し、隣接リストとイベントキューによる計算を実現。  
+* \[x\] **Bio-Plausible Learning:** 誤差逆伝播（BP）を廃止し、予測誤差とSTDPによる局所学習を実装。  
+* \[x\] **Stability:** 不応期と抑制性ニューロン（Dale's Law）導入による活動安定化。  
+* \[x\] **Visualization:** ラスタープロットによる脳活動の可視化。  
+* \[x\] **OS Integration:** 同期/非同期実行モードを備えた NeuromorphicOS の実装。
 
-## **🚀 Phase 2: "The Rust Engine" (Next Step)**
+## **🚀 Phase 2: The Rust Engine (Current Focus)**
 
-Pythonでのリスト操作やループは、大規模なイベント駆動シミュレーションには遅すぎます。
+**目標:** Pythonの速度的限界を突破し、大規模ネットワーク（10万ニューロン〜）をリアルタイム動作させる。
 
-カーネルのコア部分をRust言語で書き直し、Pythonからバインディング（PyO3）で呼び出す形へ移行します。
+* \[ \] **Rust Kernel:** カーネルコアロジック（event\_driven\_simulator.py）をRust言語で書き換え。  
+* \[ \] **PyO3 Binding:** PythonからRustカーネルを透過的に呼び出せるラッパーの作成。  
+* \[ \] **Memory Optimization:** メモリアリーナを用いたキャッシュ効率の良いノード管理。  
+* \[ \] **SIMD Acceleration:** イベント処理のバッチ化とベクトル命令による高速化。
 
-* **Rust Kernel:**  
-  * メモリアリーナによる高速なノード管理。  
-  * SIMD命令を使ったバッチイベント処理。  
-  * マルチスレッド対応のイベントキュー。  
-* **Target Performance:**  
-  * 100万ニューロン、1億シナプスをリアルタイム（Real-time factor 1.0）で動作させる。
+## **🌱 Phase 3: Structural Plasticity (The Living Brain)**
 
-## **🌱 Phase 3: "Structural Plasticity" (The Living Brain)**
+**目標:** 固定されたネットワークトポロジーからの脱却。学習＝「重みの変更」から「回路の組み替え」へ。
 
-固定された配線（Weight Matrix）からの脱却を完了させます。
+* \[ \] **Synaptogenesis:** 共発火するニューロン間に、物理的に新しいシナプスを動的に生成する機能。  
+* \[ \] **Pruning:** 長期間使用されていない、あるいは強度が低いシナプスを物理的に削除し、メモリを解放する機能。  
+* \[ \] **Dynamic Routing:** タスクに応じて情報の流れる経路が物理的に変化するアーキテクチャ。
 
-* **Synaptogenesis (シナプス生成):**  
-  * よく発火するニューロン同士が、物理的に新しいシナプスを結ぶ（Hebbian Growth）。  
-* **Pruning (刈り込み):**  
-  * 使われないシナプスは物理的に消滅し、メモリを解放する。  
-* **Dynamic Topology:**  
-  * 学習とは「重みの調整」ではなく「回路の自己組織化」となる。
+## **🤖 Phase 4: Embodied & Social Intelligence**
 
-## **🤖 Phase 4: "Embodied Intelligence"**
+**目標:** 身体性と社会性を持つエージェントへの進化。
 
-身体性を持ったエージェントとしての自律化。
+* \[ \] **DVS Support:** イベントカメラ（Dynamic Vision Sensor）からの非同期ストリーム入力を直接処理するインターフェース。  
+* \[ \] **Motor Control:** スパイク頻度によるサーボモータ等のアクチュエータ制御。  
+* \[ \] **Multi-Agent Simulation:** 複数のDORAインスタンスが、言語（または独自の信号）を通じて知識を交換する「社会」のシミュレーション。
 
-* **Sensory-Motor Loop:**  
-  * DVSカメラ（イベントカメラ）入力への対応。  
-  * ロボットアーム等のアクチュエータ制御。  
-* **Homeostasis 2.0:**  
-  * バッテリー残量（エネルギー）に基づく、睡眠・探索・休息の自律的なスケジューリング。
+## **🌌 Phase 5: The Omega Point**
 
-## **🌌 Phase 5: "The Omega Point"**
+**目標:** 創発的意識の探求。
 
-* **Consciousness:** 複雑系としての創発的意識の解明。  
-* **Human-AI Symbiosis:** 言語を通じた、人間との深い共感と対話。
+* \[ \] **Global Workspace Theory:** 大規模な再帰結合ネットワークにおける、情報統合と「意識」の創発現象の観測。  
+* \[ \] **Self-Reflection:** 自己の内部状態（発火パターン）を言語化し、それを再び入力としてフィードバックするループの実装。
 
-*"The goal is not to calculate the answer, but to experience the process."*
-
-これらのドキュメントにより、プロジェクトの独自性と先進性が誰の目にも明らかになるはずです。  
+*Roadmap updated: 2026-02-06*

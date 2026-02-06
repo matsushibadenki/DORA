@@ -1,6 +1,6 @@
 # snn_research/hardware/event_driven_simulator.py
-# Title: DORA Kernel v1.7 (Compat Alias)
-# Description: EventDrivenSimulatorエイリアスを追加し、旧スクリプトとの互換性を確保。
+# Title: DORA Kernel v2.0 (Export Fix)
+# Description: __all__を追加し、EventDrivenSimulatorエイリアスを明示的にエクスポート。
 
 import heapq
 import logging
@@ -14,6 +14,8 @@ import torch.nn as nn
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["DORAKernel", "EventDrivenSimulator", "SpikeEvent", "NeuronNode", "Synapse"]
 
 # --- Data Structures ---
 
@@ -75,9 +77,27 @@ class DORAKernel:
         self.event_queue: List[SpikeEvent] = []
         self.current_time = 0.0
         self.dt = dt
-        self.stats = {"ops": 0, "spikes": 0, "plasticity_events": 0}
+        self.stats = {
+            "ops": 0, "spikes": 0, "plasticity_events": 0,
+            "synapses_created": 0, "synapses_pruned": 0
+        }
         self.spike_history: List[Tuple[float, int, bool]] = []
-        logger.info("🧠 DORA Kernel v1.7 (Compat Alias) initialized")
+        
+        self.structural_plasticity_enabled = True
+        self.is_sleeping = False
+        
+        self.pruning_threshold_wake = 0.01
+        self.pruning_threshold_sleep = 0.05
+        self.growth_probability = 0.05
+        self.pruning_interval = 1000
+        
+        logger.info("🧠 DORA Kernel v2.0 (Export Fix) initialized")
+
+    def set_sleep_mode(self, enabled: bool):
+        self.is_sleeping = enabled
+        mode_str = "SLEEP" if enabled else "WAKE"
+        thresh = self.pruning_threshold_sleep if enabled else self.pruning_threshold_wake
+        logger.info(f"🌙 Kernel Mode Switch: {mode_str} (Pruning Threshold: {thresh})")
 
     def add_neuron(self, layer_id: int = 0, v_thresh: float = 0.5, tau_mem: float = 50.0) -> int:
         nid = len(self.neurons)
@@ -122,13 +142,9 @@ class DORAKernel:
                 is_inhibitory = False
                 if i < len(layers) - 1:
                     is_inhibitory = (random.random() < inhibitory_ratio)
-                
                 thresh = 0.4 if is_inhibitory else 0.5
                 self.neurons.append(NeuronNode(
-                    total_neurons, i + 1, 
-                    v_thresh=thresh, 
-                    refractory_period=3.0,
-                    is_inhibitory=is_inhibitory
+                    total_neurons, i + 1, v_thresh=thresh, refractory_period=3.0, is_inhibitory=is_inhibitory
                 ))
                 total_neurons += 1
         
@@ -177,6 +193,7 @@ class DORAKernel:
     def run(self, duration: float = 1.0, learning_enabled: bool = True) -> Dict[int, int]:
         end_time = self.current_time + duration
         spike_counts: Dict[int, int] = {}
+        ops_counter = 0
         
         while self.event_queue:
             if self.event_queue[0].timestamp > end_time:
@@ -191,10 +208,14 @@ class DORAKernel:
             self.stats["spikes"] += 1
             spike_counts[event.neuron_id] = spike_counts.get(event.neuron_id, 0) + 1
             
+            if learning_enabled and self.structural_plasticity_enabled and not self.is_sleeping:
+                self._grow_connections(src_neuron)
+
             for synapse in src_neuron.outgoing_synapses:
                 target_neuron = self.neurons[synapse.target_id]
                 target_neuron.integrate(synapse.weight, 1.0)
                 self.stats["ops"] += 1
+                ops_counter += 1
                 
                 if target_neuron.check_fire(self.current_time):
                     next_time = self.current_time + synapse.delay
@@ -203,8 +224,49 @@ class DORAKernel:
                     
                     if learning_enabled:
                         self._apply_plasticity(src_neuron, target_neuron, synapse)
+            
+            if learning_enabled and self.structural_plasticity_enabled:
+                if ops_counter > self.pruning_interval:
+                    self._prune_connections_global()
+                    ops_counter = 0
         
         return spike_counts
+
+    def _grow_connections(self, active_neuron: NeuronNode):
+        if random.random() > self.growth_probability: return
+        
+        candidate_ids = random.sample(range(len(self.neurons)), min(5, len(self.neurons)))
+        for tgt_id in candidate_ids:
+            if tgt_id == active_neuron.id: continue
+            target = self.neurons[tgt_id]
+            exists = False
+            for syn in active_neuron.outgoing_synapses:
+                if syn.target_id == tgt_id:
+                    exists = True
+                    break
+            if exists: continue
+
+            time_diff = self.current_time - target.last_spike_time
+            if 0 < time_diff < 10.0:
+                weight = -0.5 if active_neuron.is_inhibitory else 0.5
+                new_syn = Synapse(tgt_id, weight=weight, delay=random.uniform(1.0, 3.0))
+                active_neuron.outgoing_synapses.append(new_syn)
+                self.stats["synapses_created"] += 1
+
+    def _prune_connections_global(self):
+        threshold = self.pruning_threshold_sleep if self.is_sleeping else self.pruning_threshold_wake
+        pruned_count = 0
+        for neuron in self.neurons:
+            original_len = len(neuron.outgoing_synapses)
+            neuron.outgoing_synapses = [
+                s for s in neuron.outgoing_synapses 
+                if abs(s.weight) > threshold
+            ]
+            pruned_count += (original_len - len(neuron.outgoing_synapses))
+        
+        self.stats["synapses_pruned"] += pruned_count
+        if pruned_count > 0:
+            logger.info(f"✂️ Pruned {pruned_count} weak synapses (Thresh: {threshold}).")
 
     def _apply_plasticity(self, pre: NeuronNode, post: NeuronNode, synapse: Synapse):
         if pre.is_inhibitory: return
@@ -212,6 +274,8 @@ class DORAKernel:
             synapse.weight += 0.05 * post.prediction_error
             synapse.weight = min(synapse.weight, 10.0)
             self.stats["plasticity_events"] += 1
+        else:
+            synapse.weight *= 0.99 
 
     def reset_state(self):
         self.current_time = 0.0
@@ -222,5 +286,4 @@ class DORAKernel:
             n.last_spike_time = -100.0
             n.prediction_error = 0.0
 
-# [Fix] Backward Compatibility Alias
 EventDrivenSimulator = DORAKernel
