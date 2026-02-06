@@ -1,6 +1,6 @@
 # benchmarks/stability_benchmark.py
-# Title: Stability Benchmark (Mypy Ignore Fix)
-# Description: sklearnの型ヒント欠落を無視。
+# Title: Stability Benchmark v1.1 (Fatigue Safe)
+# Description: 脳が疲労(None)を返した場合のクラッシュを防ぐ修正を追加。
 
 import torch
 import numpy as np
@@ -32,27 +32,49 @@ class StabilityBenchmark:
         
         X_tensor = torch.tensor(X, dtype=torch.float32)
         
+        # 出力次元の推定（初期化用）
+        output_dim = 10
+        if hasattr(self.brain, "d_model"):
+            output_dim = self.brain.d_model
+        
         for noise in noise_levels:
             noisy_X = X_tensor + torch.randn_like(X_tensor) * noise
             
             if hasattr(self.brain, "process_step"):
                 outputs = []
-                for i in range(min(100, len(noisy_X))):
+                # テストサンプル数を制限 (100サンプル)
+                limit = min(100, len(noisy_X))
+                
+                for i in range(limit):
                     sample = noisy_X[i].unsqueeze(0)
                     out = self.brain.process_step(sample)
                     
+                    feat = None
                     if isinstance(out, dict) and "output" in out:
                         feat = out["output"]
-                    else:
-                        feat = torch.zeros(1, 10)
-                        
-                    outputs.append(feat.detach().cpu().numpy().flatten())
+                    
+                    # [Fix] Handle None output (Fatigue/Sleep)
+                    if feat is None:
+                        # 疲労時はゼロベクトル（反応なし）として扱う
+                        feat = torch.zeros(1, output_dim)
+                    
+                    # Ensure tensor is on CPU
+                    if isinstance(feat, torch.Tensor):
+                        feat = feat.detach().cpu()
+                    
+                    outputs.append(feat.numpy().flatten())
                 
                 features = np.array(outputs)
                 
-                clf = LogisticRegression(max_iter=200)
-                clf.fit(features, y[:100])
-                acc = clf.score(features, y[:100])
+                # Check for NaNs or all zeros (Brain dead)
+                if np.all(features == 0):
+                    logger.warning(f"⚠️ Brain returned all zeros for noise {noise}. Probably fatigued.")
+                    acc = 0.0
+                else:
+                    clf = LogisticRegression(max_iter=200)
+                    # Use only valid features for training simple readout
+                    clf.fit(features, y[:limit])
+                    acc = clf.score(features, y[:limit])
                 
                 results[f"noise_{noise}"] = acc
                 print(f"   Noise {noise}: Accuracy {acc:.3f}")

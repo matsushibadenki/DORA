@@ -1,8 +1,8 @@
 # scripts/demos/brain/run_structural_plasticity_demo.py
-# Title: Structural Plasticity Demo v2.1 (Aggressive Pruning)
+# Title: Structural Plasticity Demo v2.2 (SHY Enhanced)
 # Description: 
 #   睡眠時のシナプス刈り込みをより確実に発生させるための調整版。
-#   閾値を動的に操作し、強い忘却（Forget）をシミュレートする。
+#   閾値を動的に操作し、Synaptic Scalingによる能動的な忘却（Forget）をシミュレートする。
 
 import sys
 import os
@@ -26,7 +26,7 @@ def count_total_synapses(kernel):
 
 def run_demo():
     print("\n" + "="*60)
-    print("🌱 DORA Structural Plasticity Demo v2.1: The Cycle of Life")
+    print("🌱 DORA Structural Plasticity Demo v2.2: The Cycle of Life")
     print("="*60 + "\n")
 
     container = AppContainer()
@@ -76,7 +76,7 @@ def run_demo():
     # --- Phase 2: SLEEP ---
     print("\n💤 Phase 2: [SLEEP] Consolidation & Pruning")
     print("   Switching to sleep mode. Aggressive pruning activated.")
-    print("   Simulating long-term sleep (20 cycles)...")
+    print("   Simulating long-term sleep (20 cycles) with Synaptic Scaling...")
     
     os_kernel.shutdown() 
     
@@ -84,8 +84,14 @@ def run_demo():
     dream_stimulus = torch.rand(1, 128, device=device) * 2.0
     
     for i in range(20):
+        # 睡眠中の夢（Replay）処理
         brain.process_step(dream_stimulus)
         
+        # [New] 睡眠中のシナプス恒常性維持（SHY）をシミュレート
+        # ステップごとに全シナプスをわずかに減衰させ、閾値以下にする
+        if hasattr(kernel, "apply_synaptic_scaling"):
+            kernel.apply_synaptic_scaling(0.98) # 2% decay per step
+
         # 5回に1回ログ出力
         if (i+1) % 5 == 0:
             pruned = kernel.stats['synapses_pruned']
@@ -106,7 +112,8 @@ def run_demo():
         print("   ✅ SUCCESS: Sleep pruning reduced connection count.")
         print("      The brain has forgotten weak memories to save energy.")
     else:
-        print("   ⚠️ NOTE: No pruning occurred.")
+        print("   ⚠️ NOTE: Pruning was minor or did not occur.")
+        print("      Try increasing scaling factor or sleep duration.")
 
     print("\n✅ Demo Completed Successfully.")
 

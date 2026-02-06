@@ -14,9 +14,10 @@ class BaseAgent(ABC):
         self.config = config or {}
 
     @abstractmethod
-    def step(self, observation: torch.Tensor) -> Any:
+    def step(self, observation: Any) -> Any:
         """
         1ステップの環境観測を受け取り、行動を返す。
+        observationはTensor, Dictなどエージェントによって異なる型を許容する。
         """
         pass
 

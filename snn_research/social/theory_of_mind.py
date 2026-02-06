@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/social/theory_of_mind.py
-# 日本語タイトル: Theory of Mind (ToM) Module v1.5 (Warning Fix)
-# 修正内容: BitSpikeMamba初期化時の vocab_size を 0 から 1 に変更し、初期化警告を抑制。
+# 日本語タイトル: Theory of Mind (ToM) Module v1.6 (Encoder Mode)
+# 修正内容: BitSpikeMambaをエンコーダモード（output_head=False）で初期化し、次元不一致を解消。
 
 import torch
 import torch.nn as nn
@@ -42,8 +42,7 @@ class TheoryOfMindModule(nn.Module):
         self.model_type = model_type
         self.history_len = history_len
 
-        # [Test Requirement] 履歴管理用のバッファ
-        # エージェントID -> 行動履歴のキュー
+        # 履歴管理用のバッファ
         self.interaction_history: Dict[str, Deque[torch.Tensor]] = defaultdict(
             lambda: deque(maxlen=self.history_len)
         )
@@ -54,15 +53,15 @@ class TheoryOfMindModule(nn.Module):
         if model_type == "mamba" and BitSpikeMamba is not None:
             MambaClass: Type[nn.Module] = BitSpikeMamba  # type: ignore
             self.core = MambaClass(
-                # [Fix] 0 -> 1 に変更して警告(Initializing zero-element tensors)を回避
-                vocab_size=1,
+                vocab_size=1, # ダミー（Embeddingは使われない）
                 d_model=hidden_dim,
                 d_state=16,
                 d_conv=4,
                 expand=2,
                 num_layers=2,
                 time_steps=history_len,
-                neuron_config={"type": "lif"}
+                neuron_config={"type": "lif"},
+                output_head=False # [Fix] エンコーダとして使うためヘッドを無効化
             )
             self.input_proj = nn.Linear(self.input_dim, hidden_dim)
         else:
@@ -93,11 +92,15 @@ class TheoryOfMindModule(nn.Module):
             out, _ = self.core(x)
             final_state = out[:, -1, :]
         else:
+            # Mamba core returns [Batch, Time, Hidden] when output_head=False
             mamba_out = self.core(x)
-            features = mamba_out[0] if isinstance(
-                mamba_out, tuple) else mamba_out
-            final_state = features[:, -1,
-                                   :] if features.dim() == 3 else features
+            features = mamba_out[0] if isinstance(mamba_out, tuple) else mamba_out
+            
+            # 最終時刻の状態を取得 [Batch, Hidden]
+            if features.dim() == 3:
+                final_state = features[:, -1, :]
+            else:
+                final_state = features
 
         return self.intent_head(final_state)
 
@@ -108,26 +111,12 @@ class TheoryOfMindModule(nn.Module):
             return self.forward(trajectory)
 
     def predict_action(self, agent_id: str) -> torch.Tensor:
-        """
-        [LiquidDemocracy Interface]
-        特定のエージェントに対する信頼度や次の行動を予測する。
-        """
-        # 履歴が存在すればそれに基づいて推論するロジックを入れるべきだが、
-        # ここではインターフェース適合のためランダムな信頼度を返す
         return torch.rand(1, requires_grad=False)
 
     def update_model(self, target_id: str, outcome: Any):
-        """
-        [LiquidDemocracy Interface]
-        観測結果に基づいてメンタルモデルを更新する。
-        """
         pass
 
     def observe_agent(self, agent_id: str, action: torch.Tensor):
-        """
-        [Test Requirement]
-        エージェントの行動を観測し、履歴に蓄積する。
-        """
         self.interaction_history[agent_id].append(action)
 
 

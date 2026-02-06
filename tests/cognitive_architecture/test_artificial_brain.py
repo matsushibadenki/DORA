@@ -1,5 +1,5 @@
 # ファイルパス: tests/cognitive_architecture/test_artificial_brain.py
-# 修正: 属性名とメソッド名を最新の実装(ArtificialBrain v2.x)に合わせて修正。
+# 修正: メソッド名を修正 (get_all_knowledge -> retrieve_knowledge)
 
 from app.containers import BrainContainer
 import sys
@@ -39,7 +39,6 @@ def test_artificial_brain_instantiation(brain_container: BrainContainer):
     assert brain is not None
     assert brain.pfc is not None
     assert brain.hippocampus is not None
-    # [Fix] motor -> motor_cortex
     assert brain.motor_cortex is not None
     print("✅ ArtificialBrainインスタンスの構築に成功しました。")
 
@@ -50,13 +49,14 @@ def test_cognitive_cycle_runs_and_consolidates_memory(brain_instance):
     """
     # 1. 認知サイクルの実行
     try:
-        # [Fix] run_cognitive_cycle -> process_step
+        # run_cognitive_cycle -> process_step
         brain_instance.process_step(sensory_input="test_stimulus")
     except Exception as e:
         pytest.fail(f"Cognitive cycle failed: {e}")
 
-    # 2. Cortexから全知識を取得
-    all_knowledge = brain_instance.cortex.get_all_knowledge()
+    # 2. Cortexから知識を取得 (修正箇所)
+    # get_all_knowledge() は存在しないため、retrieve_knowledge() を使用
+    all_knowledge = brain_instance.retrieve_knowledge("test_stimulus")
 
     assert isinstance(
         all_knowledge, list), "Knowledge should be returned as a list"

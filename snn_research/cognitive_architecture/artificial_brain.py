@@ -1,6 +1,6 @@
 # snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain v18.7 (Kernel Sleep Link)
-# Description: Brainの睡眠サイクルとDORAカーネルの睡眠モードを連動させる。
+# Title: Artificial Brain v18.8 (Recursion Fix)
+# Description: self.cortex = self による無限再帰(RecursionError)を修正。
 
 import torch
 import torch.nn as nn
@@ -96,9 +96,14 @@ class ArtificialBrain(nn.Module):
         
         # Legacy Attribute alias
         self.thinking_engine = self.core_torch
-        self.cortex = self
+        # [Fix] self.cortex = self を削除し、プロパティで実装する (再帰エラー防止)
 
-        logger.info(f"🚀 Artificial Brain v18.7 initialized on {self.device}.")
+        logger.info(f"🚀 Artificial Brain v18.8 initialized on {self.device}.")
+
+    @property
+    def cortex(self):
+        """Legacy alias for self"""
+        return self
 
     def _init_core_brain_torch(self):
         model_conf = self.config.get("model", {})
@@ -177,6 +182,12 @@ class ArtificialBrain(nn.Module):
         if not self.is_awake: return
         self.astrocyte.consume_energy(1.0 * delta_time)
         self.boredom_counter += delta_time
+        
+        if self.astrocyte.current_energy < 10.0:
+            logger.info("⚠️ Critical Energy Low. Auto-triggering sleep cycle.")
+            self.sleep()
+            return
+
         if self.boredom_counter > self.boredom_threshold:
             self._trigger_spontaneous_thought()
             self.boredom_counter = 0.0
@@ -185,8 +196,6 @@ class ArtificialBrain(nn.Module):
         pass
     
     def reset_state(self):
-        # 睡眠時でもここは呼ばれるが、reset_stateはキューを空にするだけでトポロジーは消さない。
-        # Pruningの状態も保持される。
         if self.use_kernel and self.kernel_substrate:
             self.kernel_substrate.reset_state()
         if hasattr(self.core_torch, "reset_state"):
@@ -212,13 +221,19 @@ class ArtificialBrain(nn.Module):
 
     def process_step(self, sensory_input: Union[torch.Tensor, str, Dict[str, Any]]) -> Dict[str, Any]:
         self.boredom_counter = 0.0
-        # 睡眠中でも、OSが意図的に入力を入れた場合は「夢（Replay）」として処理させるため
-        # 単純リターンはせず、睡眠モードのカーネルを実行させる
-        if not self.is_awake and self.use_kernel:
-            # 睡眠中もカーネルは動かす（Pruningのため）
-            pass
-        elif not self.is_awake:
-            return {"status": "sleeping"}
+        
+        if not self.is_awake:
+            if self.use_kernel and self.kernel_substrate:
+                if hasattr(self.kernel_substrate.kernel, "apply_synaptic_scaling"):
+                    self.kernel_substrate.kernel.apply_synaptic_scaling(0.99)
+                
+                if isinstance(sensory_input, torch.Tensor):
+                    inputs = {"visual_cortex": sensory_input}
+                    self.kernel_substrate.forward_step(inputs)
+                    
+                return {"status": "dreaming", "energy": self.astrocyte.current_energy}
+            else:
+                return {"status": "sleeping"}
 
         if self.astrocyte.current_energy <= 5.0:
             return {"status": "fatigued", "output": None}
@@ -254,7 +269,7 @@ class ArtificialBrain(nn.Module):
                         output_tensor = torch.zeros(1, self.d_model, device=self.device)
                 perception_content = {"features": output_tensor, "modality": "visual"}
         
-        if output_tensor is not None:
+        if self.is_awake and output_tensor is not None:
             self.workspace.upload_to_workspace(source_name="sensory_cortex", content=perception_content, salience=0.8)
 
         self.workspace.step()
@@ -265,13 +280,17 @@ class ArtificialBrain(nn.Module):
             surprise = output_tensor.std().item()
             
         current_drives = self.motivation_system.process(sensory_input, prediction_error=surprise)
+        
         pfc_plan = self.pfc.plan(conscious_content)
         action_candidates = []
         if pfc_plan:
             action_candidates.append({"action": pfc_plan.get("directive", "wait"), "value": pfc_plan.get("priority", 0.5)})
 
-        selected_action = self.basal_ganglia.select_action(external_candidates=action_candidates, emotion_context=current_drives)
-        self.astrocyte.consume_energy(2.0)
+        selected_action: Union[str, Dict[str, Any], None] = "rest"
+        
+        if self.is_awake:
+            selected_action = self.basal_ganglia.select_action(external_candidates=action_candidates, emotion_context=current_drives)
+            self.astrocyte.consume_energy(2.0)
 
         return {
             "output": output_tensor,
@@ -298,10 +317,8 @@ class ArtificialBrain(nn.Module):
         self.is_awake = False
         self.sleep_cycle_count += 1
         
-        # ★ Kernelのモード切替
         if self.use_kernel and self.kernel_substrate:
             self.kernel_substrate.kernel.set_sleep_mode(True)
-            # キューはリセットするが、トポロジーは維持
             self.kernel_substrate.reset_state()
             
         self.astrocyte.replenish_energy(500.0)
@@ -312,7 +329,6 @@ class ArtificialBrain(nn.Module):
         logger.info(">>> 🌅 Wake Up (Synaptogenesis Enabled) <<<")
         self.is_awake = True
         
-        # ★ Kernelのモード切替
         if self.use_kernel and self.kernel_substrate:
             self.kernel_substrate.kernel.set_sleep_mode(False)
             

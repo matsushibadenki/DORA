@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/social/communication_channel.py
-# 日本語タイトル: Noisy Communication Channel
-# 目的: エージェント間の通信（発話・聴取）における物理的なノイズや劣化をシミュレートする。
+# 日本語タイトル: Noisy Communication Channel v1.1 (Dynamic Vocab)
+# 修正内容: vocab_sizeを動的に受け取り、Embeddingの範囲外のノイズID生成によるエラーを防止。
 
 import torch
 
@@ -17,10 +17,12 @@ class CommunicationChannel:
         self, 
         noise_level: float = 0.0, 
         dropout_prob: float = 0.0,
+        vocab_size: int = 1000,  # [New] デフォルト値、インスタンス化時に上書き推奨
         device: str = 'cpu'
     ):
         self.noise_level = noise_level
         self.dropout_prob = dropout_prob
+        self.vocab_size = vocab_size # [New] ノイズ生成範囲の制限に使用
         self.device = device
 
     def transmit_tokens(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -41,10 +43,11 @@ class CommunicationChannel:
         B, L = noisy_ids.shape
         
         # 1. Random Replacement (Noise)
-        # noise_levelの確率で、ランダムなトークン(例: 0~1000)に置き換わる
+        # noise_levelの確率で、ランダムなトークンに置き換わる
         if self.noise_level > 0:
             mask = torch.rand(B, L, device=self.device) < self.noise_level
-            random_tokens = torch.randint(0, 1000, (B, L), device=self.device) # 簡易語彙範囲
+            # [Fix] vocab_sizeの範囲内でランダムなIDを生成
+            random_tokens = torch.randint(0, self.vocab_size, (B, L), device=self.device)
             noisy_ids[mask] = random_tokens[mask]
 
         # 2. Dropout (Signal Loss)

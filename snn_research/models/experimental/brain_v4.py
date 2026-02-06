@@ -1,7 +1,6 @@
 # ファイルパス: snn_research/models/experimental/brain_v4.py
-# 日本語タイトル: Brain v4.0 Synesthetic Architecture (Refactored)
-# 目的: 視覚・聴覚・触覚・嗅覚を UnifiedSensoryProjector を通じて統合し、
-#       単一の学習エンジンで処理する完全な共感覚アーキテクチャ。
+# 日本語タイトル: Brain v4.1 Synesthetic Architecture (Generate Fix)
+# 修正内容: generateメソッド内で return_spikes=True を指定し、アンパックエラーを修正。
 
 import torch
 import torch.nn as nn
@@ -19,8 +18,8 @@ class SynestheticBrain(nn.Module):
         d_model: int = 256,
         num_layers: int = 6,
         time_steps: int = 4,
-        tactile_dim: int = 64,    # 触覚センサー入力の次元数
-        olfactory_dim: int = 32,  # 嗅覚センサー入力の次元数
+        tactile_dim: int = 64,
+        olfactory_dim: int = 32,
         device: str = 'cpu'
     ):
         super().__init__()
@@ -28,18 +27,16 @@ class SynestheticBrain(nn.Module):
         self.time_steps = time_steps
         self.d_model = d_model
 
-        # 1. 汎用感覚野 (Universal Sensory Cortex)
-        # 物理信号をスパイク列に変換
+        # 1. 汎用感覚野
         self.encoder = UniversalSpikeEncoder(
             time_steps=time_steps,
             output_dim=d_model,
             device=device
         ).to(device)
 
-        # 2. 五感統合ブリッジ (Unified Sensory Bridge)
-        # 全ての感覚モダリティの定義と射影をここで行う
+        # 2. 五感統合ブリッジ
         modality_configs = {
-            'vision': d_model,     # Output of Encoder is d_model
+            'vision': d_model,
             'audio': d_model,
             'tactile': d_model,
             'olfactory': d_model
@@ -51,7 +48,7 @@ class SynestheticBrain(nn.Module):
             use_bitnet=False
         ).to(device)
 
-        # 3. 前頭葉・中枢エンジン (Central Executive)
+        # 3. 前頭葉・中枢エンジン
         self.core_brain = BitSpikeMamba(
             vocab_size=vocab_size,
             d_model=d_model,
@@ -70,7 +67,7 @@ class SynestheticBrain(nn.Module):
         """
         五感入力をスパイク化し、統合ブリッジを通してコンテキスト化する。
         """
-        # Phase 1: 各感覚器でのスパイク符号化 (Encoding)
+        # Phase 1: 各感覚器でのスパイク符号化
         sensory_spikes: Dict[str, torch.Tensor] = {}
 
         if image_input is not None:
@@ -89,28 +86,19 @@ class SynestheticBrain(nn.Module):
             sensory_spikes['olfactory'] = self.encoder.encode(
                 olfactory_input, modality='olfactory')
 
-        # Phase 2: 感覚統合 (Fusion & Grounding)
-        # UnifiedSensoryProjector が全てのスパイク入力を受け取り、統合コンテキストを返す
-        sensory_context = self.sensory_bridge(
-            sensory_spikes)  # [B, Total_Sensory_Seq, D]
+        # Phase 2: 感覚統合
+        sensory_context = self.sensory_bridge(sensory_spikes)
 
-        # Phase 3: 言語と思考 (Language & Thought)
+        # Phase 3: 言語と思考
         if text_input is not None:
-            text_emb = self.core_brain.embedding(
-                text_input)  # [B, Text_Seq, D]
-            # 感覚コンテキストと思考列を結合
+            text_emb = self.core_brain.embedding(text_input)
             combined_input = torch.cat([sensory_context, text_emb], dim=1)
         else:
-            # テキスト入力がない場合でも、感覚情報だけで思考を開始できるようにする
-            # ただし空の入力はエラーになるのでチェック
             if sensory_context.size(1) == 0:
-                # 何も入力がない場合はダミー入力を入れるかエラーにする
-                # ここではエラー回避のためダミーのstart token相当を入れる運用も考えられるが
-                # ひとまずエラーとする
                 raise ValueError("No input provided to SynestheticBrain")
             combined_input = sensory_context
 
-        # Phase 4: 統合処理 (Unified Processing)
+        # Phase 4: 統合処理
         logits, _, _ = self.core_brain(combined_input, return_spikes=True)
 
         return logits
@@ -120,7 +108,6 @@ class SynestheticBrain(nn.Module):
         with torch.no_grad():
             # 視覚を知覚 -> 統合コンテキストへ
             vision_spikes = self.encoder.encode(image_input, modality='image')
-            # 辞書で渡すのが UnifiedSensoryProjector の規約
             current_context = self.sensory_bridge({'vision': vision_spikes})
 
             generated_ids = []
@@ -130,7 +117,9 @@ class SynestheticBrain(nn.Module):
             for _ in range(max_new_tokens):
                 text_emb = self.core_brain.embedding(curr_input_ids)
                 combined = torch.cat([current_context, text_emb], dim=1)
-                logits, _, _ = self.core_brain(combined)
+                
+                # [Fix] return_spikes=True を追加して戻り値の数を合わせる
+                logits, _, _ = self.core_brain(combined, return_spikes=True)
 
                 next_token = torch.argmax(
                     logits[:, -1, :], dim=-1, keepdim=True)

@@ -1,6 +1,8 @@
 # snn_research/hardware/event_driven_simulator.py
-# Title: DORA Kernel v2.0 (Export Fix)
-# Description: __all__を追加し、EventDrivenSimulatorエイリアスを明示的にエクスポート。
+# Title: DORA Kernel v2.1 (Stability Fix)
+# Description: 
+#   ops_counterを永続化し、短いステップ実行でもPruningが動作するように修正。
+#   Synaptic Scaling (SHY) をシミュレートする apply_synaptic_scaling を追加。
 
 import heapq
 import logging
@@ -91,7 +93,10 @@ class DORAKernel:
         self.growth_probability = 0.05
         self.pruning_interval = 1000
         
-        logger.info("🧠 DORA Kernel v2.0 (Export Fix) initialized")
+        # 実行ごとのリセットを防ぐため、インスタンス変数として保持
+        self.ops_counter = 0
+        
+        logger.info("🧠 DORA Kernel v2.1 (Stability Fix) initialized")
 
     def set_sleep_mode(self, enabled: bool):
         self.is_sleeping = enabled
@@ -189,11 +194,18 @@ class DORAKernel:
             if idx < len(self.neurons):
                 heapq.heappush(self.event_queue, SpikeEvent(timestamp, idx, payload=5.0))
                 self.spike_history.append((timestamp, idx, False))
+    
+    def apply_synaptic_scaling(self, scaling_factor: float = 0.99):
+        """シナプス恒常性維持仮説(SHY)に基づき、全シナプス強度をスケーリングダウンする"""
+        for neuron in self.neurons:
+            for synapse in neuron.outgoing_synapses:
+                synapse.weight *= scaling_factor
+        # logger.debug(f"📉 Applied global synaptic scaling (Factor: {scaling_factor})")
 
     def run(self, duration: float = 1.0, learning_enabled: bool = True) -> Dict[int, int]:
         end_time = self.current_time + duration
         spike_counts: Dict[int, int] = {}
-        ops_counter = 0
+        # ops_counter ローカル変数を削除し、self.ops_counter を使用
         
         while self.event_queue:
             if self.event_queue[0].timestamp > end_time:
@@ -215,7 +227,7 @@ class DORAKernel:
                 target_neuron = self.neurons[synapse.target_id]
                 target_neuron.integrate(synapse.weight, 1.0)
                 self.stats["ops"] += 1
-                ops_counter += 1
+                self.ops_counter += 1  # 修正: 永続カウンタを使用
                 
                 if target_neuron.check_fire(self.current_time):
                     next_time = self.current_time + synapse.delay
@@ -226,9 +238,9 @@ class DORAKernel:
                         self._apply_plasticity(src_neuron, target_neuron, synapse)
             
             if learning_enabled and self.structural_plasticity_enabled:
-                if ops_counter > self.pruning_interval:
+                if self.ops_counter > self.pruning_interval:
                     self._prune_connections_global()
-                    ops_counter = 0
+                    self.ops_counter = 0
         
         return spike_counts
 
