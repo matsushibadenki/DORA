@@ -1,6 +1,6 @@
-# snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain v18.8 (Recursion Fix)
-# Description: self.cortex = self による無限再帰(RecursionError)を修正。
+# ファイルパス: snn_research/cognitive_architecture/artificial_brain.py
+# Title: Artificial Brain v18.9 (Stable & DI Supported)
+# Description: デバイス選択ロジックの修正、依存性注入(DI)対応、再帰エラー防止を統合。
 
 import torch
 import torch.nn as nn
@@ -24,7 +24,7 @@ from snn_research.cognitive_architecture.sleep_consolidation import SleepConsoli
 from snn_research.cognitive_architecture.hippocampus import Hippocampus
 from snn_research.cognitive_architecture.motor_cortex import MotorCortex
 
-# Optional
+# Optional Modules
 try:
     from snn_research.cognitive_architecture.theory_of_mind import TheoryOfMind
     from snn_research.cognitive_architecture.causal_inference_engine import CausalInferenceEngine
@@ -35,14 +35,25 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class ArtificialBrain(nn.Module):
-    def __init__(self, config: Dict[str, Any], device_name: Optional[str] = None):
+    def __init__(self, config: Dict[str, Any], device_name: Optional[str] = None, **kwargs):
+        """
+        Args:
+            config: 脳のハイパーパラメータ設定
+            device_name: 'cpu', 'cuda', 'mps' 等
+            **kwargs: 外部から注入するコンポーネント (global_workspace, hippocampus 等)
+        """
         super().__init__()
         self.config = config
 
+        # --- 1. Robust Device Selection ---
         target_device = device_name
         if not target_device or target_device == "auto" or str(target_device) == "None":
             target_device = config.get("device")
         
+        # Fallback immediately if still None (Fix for TypeError)
+        if target_device is None:
+            target_device = "cpu"
+
         training_conf = config.get("training", {})
         if hasattr(training_conf, "paradigm"):
             paradigm = str(training_conf.paradigm)
@@ -54,8 +65,6 @@ class ArtificialBrain(nn.Module):
         if self.use_kernel:
             target_device = "cpu"
             print(f"⚡ [Brain] Kernel Mode Detected. Using simplified MLP structure.")
-        elif not target_device or target_device == "auto":
-            target_device = "cpu"
         
         self.device = torch.device(target_device)
         self.is_awake = True
@@ -66,6 +75,7 @@ class ArtificialBrain(nn.Module):
         self.boredom_counter = 0.0
         self.boredom_threshold = 10.0
 
+        # --- 2. Initialize Core Brain ---
         self._init_core_brain_torch()
         
         self.kernel_substrate: Optional[SpikingNeuralSubstrate] = None
@@ -76,33 +86,66 @@ class ArtificialBrain(nn.Module):
         else:
             logger.info(f"ℹ️  Running in Standard PyTorch Mode (Matrix Ops). Paradigm: {paradigm}")
 
-        self.astrocyte = AstrocyteNetwork(max_energy=1000.0, fatigue_threshold=80.0, device=str(self.device))
+        # --- 3. Component Initialization (with Dependency Injection) ---
+        
+        # Astrocyte
+        if "astrocyte_network" in kwargs:
+            self.astrocyte = kwargs["astrocyte_network"]
+        else:
+            self.astrocyte = AstrocyteNetwork(max_energy=1000.0, fatigue_threshold=80.0, device=str(self.device))
 
-        self.workspace = GlobalWorkspace(dim=self.d_model, decay=config.get("workspace_decay", 0.9))
+        # Global Workspace
+        if "global_workspace" in kwargs:
+            self.workspace = kwargs["global_workspace"]
+        else:
+            self.workspace = GlobalWorkspace(dim=self.d_model, decay=config.get("workspace_decay", 0.9))
+
+        # Motivation & Memory Systems
         self.motivation_system = IntrinsicMotivationSystem(curiosity_weight=config.get("curiosity_weight", 1.0))
         self.rag_system = RAGSystem(embedding_dim=self.d_model, vector_store_path=config.get("memory_path", "./runtime_state/memory"))
-        self.hippocampus = Hippocampus(capacity=200, input_dim=self.d_model, device=str(self.device))
+        
+        # Hippocampus
+        if "hippocampus" in kwargs:
+            self.hippocampus = kwargs["hippocampus"]
+        else:
+            self.hippocampus = Hippocampus(capacity=200, input_dim=self.d_model, device=str(self.device))
+
+        # Cortex (Long-term Store) Injection Handling
+        # self.cortex プロパティと競合しないよう、注入されたものは別名で保持
+        self.long_term_cortex = kwargs.get("cortex", None)
+
+        # PFC & BG & Motor
         self.pfc = PrefrontalCortex(workspace=self.workspace, motivation_system=self.motivation_system, d_model=self.d_model, device=str(self.device))
         self.basal_ganglia = BasalGanglia(workspace=self.workspace, selection_threshold=0.3)
         self.motor_cortex = MotorCortex(actuators=["default_actuator"], device=str(self.device))
 
+        # Advanced Modules
         self.theory_of_mind = None
         self.causal_engine = None
         if ADVANCED_MODULES_AVAILABLE and config.get("enable_advanced_cognition", True):
             self.theory_of_mind = TheoryOfMind(self.workspace, self.rag_system)
             self.causal_engine = CausalInferenceEngine(self.rag_system, self.workspace)
 
-        self.sleep_manager = SleepConsolidator(substrate=self.core_torch)
+        # Sleep Manager (SDFT / Dreaming)
+        if "sleep_consolidator" in kwargs:
+            self.sleep_manager = kwargs["sleep_consolidator"]
+            self.sleep_manager.substrate = self.core_torch
+        else:
+            self.sleep_manager = SleepConsolidator(substrate=self.core_torch)
         
         # Legacy Attribute alias
         self.thinking_engine = self.core_torch
-        # [Fix] self.cortex = self を削除し、プロパティで実装する (再帰エラー防止)
 
-        logger.info(f"🚀 Artificial Brain v18.8 initialized on {self.device}.")
+        logger.info(f"🚀 Artificial Brain v18.9 initialized on {self.device}.")
 
     @property
     def cortex(self):
-        """Legacy alias for self"""
+        """
+        Legacy alias for self OR access to Long-Term Cortex if injected.
+        Prioritizes injected cortex for storage operations.
+        """
+        if self.long_term_cortex is not None:
+            return self.long_term_cortex
         return self
 
     def _init_core_brain_torch(self):
@@ -120,9 +163,10 @@ class ArtificialBrain(nn.Module):
                 nn.Linear(hidden_dim, output_dim)
             )
             
+            # Initialize weights for stability
             for m in self.core_torch.modules():
                 if isinstance(m, nn.Linear):
-                    nn.init.normal_(m.weight, mean=0.0, std=2.0)
+                    nn.init.normal_(m.weight, mean=0.0, std=0.1) # [Fix] std=2.0 -> 0.1 for stability
                     if m.bias is not None: nn.init.constant_(m.bias, 0.0)
 
             print(f"⚡ [Brain] Kernel Model defined: Linear({input_dim}->{hidden_dim}) -> Linear({hidden_dim}->{output_dim})")
@@ -223,17 +267,23 @@ class ArtificialBrain(nn.Module):
         self.boredom_counter = 0.0
         
         if not self.is_awake:
+            # 睡眠中 (Dreaming / SDFT)
             if self.use_kernel and self.kernel_substrate:
                 if hasattr(self.kernel_substrate.kernel, "apply_synaptic_scaling"):
                     self.kernel_substrate.kernel.apply_synaptic_scaling(0.99)
                 
+                # 入力があれば処理（夢の入力など）
                 if isinstance(sensory_input, torch.Tensor):
                     inputs = {"visual_cortex": sensory_input}
                     self.kernel_substrate.forward_step(inputs)
-                    
-                return {"status": "dreaming", "energy": self.astrocyte.current_energy}
-            else:
-                return {"status": "sleeping"}
+            
+            # [SDFT Check] 外部からSDFTを実行可能にするために、sleep_managerの状態を返す
+            dream_stats = {}
+            if self.sleep_manager:
+                 # ここでSDFTが呼び出される可能性がある
+                 pass
+
+            return {"status": "dreaming", "energy": self.astrocyte.current_energy}
 
         if self.astrocyte.current_energy <= 5.0:
             return {"status": "fatigued", "output": None}
@@ -256,9 +306,12 @@ class ArtificialBrain(nn.Module):
                 sensory_input = sensory_input.to(self.device)
                 with torch.no_grad():
                     try:
+                        # 次元不一致の簡易ガード
                         if hasattr(self.core_torch, 'input_shape') or isinstance(self.core_torch, nn.Sequential):
                              if sensory_input.shape[-1] != 128:
+                                 # 必要ならパディングやトリミング (ここでは簡易パス)
                                  pass
+                        
                         model_output = self.core_torch(sensory_input)
                         if isinstance(model_output, tuple): features = model_output[0]
                         elif isinstance(model_output, dict): features = next((v for v in model_output.values() if isinstance(v, torch.Tensor)), torch.zeros_like(sensory_input))
@@ -312,6 +365,15 @@ class ArtificialBrain(nn.Module):
         if hasattr(self.rag_system, 'search'): return self.rag_system.search(query)
         return []
 
+    def perform_sleep_cycle(self, cycles: int = 1) -> Dict[str, int]:
+        """Manually trigger sleep maintenance (SDFT compatible)"""
+        self.sleep() # Set state to sleeping
+        stats = {}
+        if self.sleep_manager:
+            stats = self.sleep_manager.perform_maintenance(cycles)
+        self.wake_up() # Auto wake up after maintenance in this explicit call
+        return stats
+
     def sleep(self): 
         logger.info(">>> 💤 Sleep Cycle Initiated (Consolidating & Pruning) <<<")
         self.is_awake = False
@@ -323,7 +385,6 @@ class ArtificialBrain(nn.Module):
             
         self.astrocyte.replenish_energy(500.0)
         self.astrocyte.clear_fatigue(50.0)
-        if self.sleep_manager: self.sleep_manager.perform_maintenance(self.sleep_cycle_count)
 
     def wake_up(self): 
         logger.info(">>> 🌅 Wake Up (Synaptogenesis Enabled) <<<")

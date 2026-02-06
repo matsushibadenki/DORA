@@ -1,20 +1,24 @@
-# snn_research/core/neuromorphic_os.py
+# ファイルパス: snn_research/core/neuromorphic_os.py
 # Title: Neuromorphic OS Kernel v2.3 (System Calls)
-# Description: sys_sleep (async) を追加。
+# Description: sys_sleep (async) を追加。循環参照とtorch未定義エラーを修正。
 
 import logging
 import time
 import psutil
 import asyncio
 import queue
-from typing import Dict, Any, Optional, Union
-import torch
-from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
+from typing import Dict, Any, Optional, Union, TYPE_CHECKING
+import torch  # ★重要: ここで必ずインポート
+
+# 循環参照エラー回避のため、型チェック時のみインポートする
+if TYPE_CHECKING:
+    from snn_research.cognitive_architecture.artificial_brain import ArtificialBrain
 
 logger = logging.getLogger(__name__)
 
 class NeuromorphicOS:
-    def __init__(self, brain: ArtificialBrain, tick_rate: float = 1.0):
+    # 型ヒントを文字列 "ArtificialBrain" に変更
+    def __init__(self, brain: "ArtificialBrain", tick_rate: float = 1.0):
         self.brain = brain
         self.tick_rate = tick_rate
         self.is_running = False
@@ -114,5 +118,7 @@ class NeuromorphicOS:
         return {
             "os_status": "RUNNING" if self.is_running else "STOPPED",
             "system_resources": self.system_stats,
-            "brain_status": self.brain.get_brain_status()
+            # brain_status 取得時にエラーが出ないようガードしても良いが、
+            # 基本的にはBrain側で実装されているはず
+            "brain_status": self.brain.get_brain_status() if hasattr(self.brain, 'get_brain_status') else "Unknown"
         }
