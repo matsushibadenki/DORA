@@ -1,6 +1,6 @@
 # snn_research/core/neurons/lif_neuron.py
-# Title: LIF Neuron (Phase 16)
-# Description: 低閾値デフォルト設定
+# Title: LIF Neuron (Type Annotated)
+# Description: クラスレベルの型アノテーションを追加し、mypyエラーを解消。
 
 import torch
 import torch.nn as nn
@@ -22,12 +22,16 @@ class SurrogateHeaviside(torch.autograd.Function):
         return grad_input, None
 
 class LIFNeuron(nn.Module):
+    # [Fix] Explicit class-level annotations for buffers
+    mem: Tensor
+    adap_thresh: Tensor
+
     def __init__(
         self,
         features: int,
-        tau_mem: float = 100.0, # Increased default
+        tau_mem: float = 100.0,
         tau_adap: float = 200.0,
-        v_threshold: float = 0.5, # Lowered default
+        v_threshold: float = 0.5,
         v_reset: float = 0.0,
         theta_plus: float = 0.5,
         dt: float = 1.0,
@@ -60,6 +64,7 @@ class LIFNeuron(nn.Module):
     def forward(self, input_current: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = input_current.shape[0]
 
+        # [Fix] Type is now inferred correctly from class annotation
         if not self.is_stateful or self.mem.shape[0] != batch_size:
             self.mem = torch.full(
                 (batch_size, self.features), self.v_reset, device=input_current.device)
@@ -69,20 +74,21 @@ class LIFNeuron(nn.Module):
         decay_mem = self.dt / self.tau_mem
         decay_adap = self.dt / self.tau_adap
 
-        # In-Place Update
         factor_mem = 1.0 - decay_mem
-        self.mem.mul_(factor_mem)
-        self.mem.add_(input_current, alpha=decay_mem) # Input scaled by decay is standard?
-        # Typically: dV = (-(V-Vrest) + R*I) / tau * dt
-        # If R=1, I contributes I/tau*dt. Here we do input_current * decay_mem. Correct.
+        
+        # Use explicit variable for readability if needed, but self.mem is typed
+        mem = self.mem
+        
+        mem.mul_(factor_mem)
+        mem.add_(input_current, alpha=decay_mem)
         
         if self.v_reset != 0.0:
-            self.mem.add_(self.v_reset * decay_mem)
+            mem.add_(self.v_reset * decay_mem)
 
         self.adap_thresh.mul_(1.0 - decay_adap)
 
         effective_threshold = self.adap_thresh + self.v_threshold
-        mem_shift = self.mem - effective_threshold
+        mem_shift = mem - effective_threshold
         
         if torch.is_grad_enabled():
             spikes = self.spike_fn(mem_shift)
@@ -91,10 +97,10 @@ class LIFNeuron(nn.Module):
 
         if spikes.any():
             mask = spikes.bool()
-            self.mem.masked_fill_(mask, self.v_reset)
+            mem.masked_fill_(mask, self.v_reset)
             self.adap_thresh.add_(spikes, alpha=self.theta_plus)
 
-        return spikes, self.mem
+        return spikes, mem
 
     @property
     def membrane_potential(self) -> torch.Tensor:

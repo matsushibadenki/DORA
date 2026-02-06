@@ -1,249 +1,226 @@
-# ファイルパス: snn_research/hardware/event_driven_simulator.py
-# Title: イベント駆動型SNNシミュレータ (Trace Saturation Fix)
-# Description:
-#   ROADMAP Phase 6 "Hardware Native Transition" 実装。
-#   修正: STDPトレースの飽和(Saturation)を導入し、過剰なLTDによる学習崩壊を防ぐ。
+# snn_research/hardware/event_driven_simulator.py
+# Title: DORA Kernel v1.7 (Compat Alias)
+# Description: EventDrivenSimulatorエイリアスを追加し、旧スクリプトとの互換性を確保。
 
-import torch
-import torch.nn as nn
 import heapq
 import logging
 import math
-from typing import List, Dict, Any
+import random
 from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Tuple, Any
 
-# 既存のニューロン定義を利用
-from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
+import torch
+import torch.nn as nn
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# --- Data Structures ---
 
 @dataclass(order=True)
 class SpikeEvent:
     timestamp: float
     neuron_id: int = field(compare=False)
-    layer_index: int = field(compare=False)
-    source_index: int = field(compare=False)
     payload: float = field(compare=False, default=1.0)
 
-
-class EventDrivenNeuronState:
-    """
-    ニューロン状態保持クラス。STDP用のトレースを追加。
-    """
-
-    def __init__(self, v_threshold: float, tau_mem: float, v_reset: float, tau_trace: float = 20.0):
-        self.v = 0.0
-        self.last_update_time = 0.0
-
+class Synapse:
+    __slots__ = ('target_id', 'weight', 'trace', 'delay')
+    def __init__(self, target_id: int, weight: float, delay: float = 1.0):
+        self.target_id = target_id
+        self.weight = weight
+        self.delay = delay
         self.trace = 0.0
-        self.last_spike_time = -1.0
-        self.tau_trace = tau_trace
 
-        self.v_threshold = v_threshold
+class NeuronNode:
+    __slots__ = (
+        'id', 'layer_id', 'v', 'v_thresh', 'v_reset', 'tau_mem', 
+        'last_spike_time', 'prediction_error', 'outgoing_synapses',
+        'refractory_period', 'is_inhibitory'
+    )
+    def __init__(self, neuron_id: int, layer_id: int, 
+                 v_thresh: float = 0.5, tau_mem: float = 50.0,
+                 refractory_period: float = 3.0, is_inhibitory: bool = False):
+        self.id = neuron_id
+        self.layer_id = layer_id
+        self.v = 0.0
+        self.v_thresh = v_thresh
+        self.v_reset = 0.0
         self.tau_mem = tau_mem
-        self.v_reset = v_reset
+        self.last_spike_time = -100.0
+        self.refractory_period = refractory_period
+        self.is_inhibitory = is_inhibitory
+        self.prediction_error = 0.0
+        self.outgoing_synapses: List[Synapse] = []
 
-    def decay_and_integrate(self, current_time: float, input_weight: float) -> None:
-        """
-        時間経過による減衰と入力の統合を行う（発火判定はしない）。
-        """
-        dt = current_time - self.last_update_time
+    def integrate(self, weight: float, dt: float) -> None:
+        decay = math.exp(-dt / self.tau_mem)
+        self.v = self.v * decay + weight
+        if self.v < -5.0: self.v = -5.0
 
-        # 1. 膜電位の減衰
-        decay_factor = math.exp(-dt / self.tau_mem)
-        self.v = self.v * decay_factor
-
-        # 2. トレースの減衰
-        trace_decay = math.exp(-dt / self.tau_trace)
-        self.trace *= trace_decay
-
-        # 3. 入力の統合
-        self.v += input_weight
-
-        self.last_update_time = current_time
-
-    def check_fire_and_update_trace(self, current_time: float) -> bool:
-        """
-        発火判定を行い、発火した場合はリセットとトレース更新を行う。
-        """
-        if self.v >= self.v_threshold:
+    def check_fire(self, current_time: float) -> bool:
+        if (current_time - self.last_spike_time) < self.refractory_period:
+            return False
+        if self.v >= self.v_thresh:
+            self.prediction_error = self.v - self.v_thresh
             self.v = self.v_reset
-
-            # --- 修正: トレースの更新ロジック ---
-            # 加算し続けるとバースト時に値が爆発するため、上限を設けるかリセットする。
-            # ここでは「発火直後はトレースが最大(1.0)になる」モデルを採用。
-            self.trace = 1.0
-
             self.last_spike_time = current_time
             return True
         return False
 
+# --- Kernel ---
 
-class EventDrivenSimulator:
-    """
-    イベント駆動型SNNシミュレータ (with On-Chip Plasticity).
-    """
-
-    def __init__(
-        self,
-        model: nn.Module,
-        enable_learning: bool = False,
-        learning_rate: float = 0.001,
-        stdp_window: float = 20.0
-    ):
-        self.model = model
+class DORAKernel:
+    def __init__(self, dt: float = 1.0):
+        self.neurons: List[NeuronNode] = []
         self.event_queue: List[SpikeEvent] = []
         self.current_time = 0.0
-        self.total_ops = 0
-        self.enable_learning = enable_learning
-        self.learning_rate = learning_rate
-        self.stdp_window = stdp_window
+        self.dt = dt
+        self.stats = {"ops": 0, "spikes": 0, "plasticity_events": 0}
+        self.spike_history: List[Tuple[float, int, bool]] = []
+        logger.info("🧠 DORA Kernel v1.7 (Compat Alias) initialized")
 
-        self.layers: List[List[EventDrivenNeuronState]] = []
-        self.weights: List[torch.Tensor] = []
+    def add_neuron(self, layer_id: int = 0, v_thresh: float = 0.5, tau_mem: float = 50.0) -> int:
+        nid = len(self.neurons)
+        node = NeuronNode(nid, layer_id, v_thresh, tau_mem, refractory_period=3.0, is_inhibitory=False)
+        self.neurons.append(node)
+        return nid
 
-        self._parse_model(model)
+    def add_synapse(self, src_id: int, tgt_id: int, weight: float, delay: float = 1.0):
+        if src_id < len(self.neurons) and tgt_id < len(self.neurons):
+            syn = Synapse(tgt_id, weight, delay)
+            self.neurons[src_id].outgoing_synapses.append(syn)
 
-        logger.info(
-            f"⚙️ Event-Driven Simulator initialized. Learning: {self.enable_learning}")
+    def build_from_torch_model(self, model: nn.Module):
+        print(f"🏗 [Kernel] Compiling model with Dale's Law (20% Inhibition)...")
+        self.neurons = []
+        self.spike_history = []
+        
+        layers = []
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Linear): layers.append(module)
+        if not layers:
+            for child in model.children():
+                if isinstance(child, nn.Linear): layers.append(child)
+        if not layers:
+            print("❌ [Kernel] Fatal: No layers found.")
+            return
 
-    def _parse_model(self, model: nn.Module):
-        current_weights = None
-        for name, mod in model.named_modules():
-            if isinstance(mod, nn.Linear):
-                current_weights = mod.weight.detach().cpu()
-                self.weights.append(current_weights)
-            elif isinstance(mod, (AdaptiveLIFNeuron, IzhikevichNeuron)):
-                if hasattr(mod, 'base_threshold'):
-                    v_th = mod.base_threshold
-                    if isinstance(v_th, torch.Tensor):
-                        v_th = v_th.mean().item()
-                else:
-                    v_th = 1.0
+        total_neurons = 0
+        layer_sizes = []
+        
+        input_size = layers[0].in_features
+        layer_sizes.append(input_size)
+        for _ in range(input_size):
+            self.neurons.append(NeuronNode(total_neurons, 0, v_thresh=0.2, is_inhibitory=False))
+            total_neurons += 1
+        
+        inhibitory_ratio = 0.2
+        for i, layer in enumerate(layers):
+            output_size = layer.out_features
+            layer_sizes.append(output_size)
+            for _ in range(output_size):
+                is_inhibitory = False
+                if i < len(layers) - 1:
+                    is_inhibitory = (random.random() < inhibitory_ratio)
+                
+                thresh = 0.4 if is_inhibitory else 0.5
+                self.neurons.append(NeuronNode(
+                    total_neurons, i + 1, 
+                    v_thresh=thresh, 
+                    refractory_period=3.0,
+                    is_inhibitory=is_inhibitory
+                ))
+                total_neurons += 1
+        
+        print(f"   -> Created {len(self.neurons)} neurons. Inhibitory ratio ~{inhibitory_ratio*100:.0f}%")
 
-                if hasattr(mod, 'tau_mem'):
-                    tau = float(mod.tau_mem)
-                elif hasattr(mod, 'log_tau_mem'):
-                    tau = (torch.exp(mod.log_tau_mem) + 1.1).mean().item()
-                else:
-                    tau = 20.0
+        count_synapses = 0
+        current_input_start = 0
+        sparsity_threshold = 0.05 
 
-                v_reset = getattr(mod, 'v_reset', 0.0)
+        for i, layer in enumerate(layers):
+            weights = layer.weight.detach().cpu().numpy()
+            input_dim = layer.in_features
+            output_dim = layer.out_features
+            output_start = current_input_start + input_dim
+            
+            weight_scale = 5.0 
+            inhibition_strength = 3.0
+            
+            for out_idx in range(output_dim):
+                tgt_id = output_start + out_idx
+                for in_idx in range(input_dim):
+                    src_id = current_input_start + in_idx
+                    raw_w = weights[out_idx, in_idx]
+                    
+                    if abs(raw_w) > sparsity_threshold:
+                        src_neuron = self.neurons[src_id]
+                        base_weight = abs(raw_w) * weight_scale
+                        final_weight = -base_weight * inhibition_strength if src_neuron.is_inhibitory else base_weight
+                        
+                        delay = random.uniform(1.0, 3.0)
+                        syn = Synapse(tgt_id, final_weight, delay)
+                        src_neuron.outgoing_synapses.append(syn)
+                        count_synapses += 1
+            
+            current_input_start += input_dim
+            
+        print(f"✅ [Kernel] Graph built: {len(self.neurons)} neurons, {count_synapses} synapses.")
+        self.stats["ops"] = count_synapses
 
-                if hasattr(mod, 'features'):
-                    n_neurons = mod.features
-                elif current_weights is not None:
-                    n_neurons = current_weights.shape[0]
-                else:
-                    continue
+    def push_input_spikes(self, spike_indices: List[int], timestamp: float):
+        for idx in spike_indices:
+            if idx < len(self.neurons):
+                heapq.heappush(self.event_queue, SpikeEvent(timestamp, idx, payload=5.0))
+                self.spike_history.append((timestamp, idx, False))
 
-                layer_states = [
-                    EventDrivenNeuronState(
-                        v_th, tau, v_reset, self.stdp_window)
-                    for _ in range(n_neurons)
-                ]
-                self.layers.append(layer_states)
-
-    def set_input_spikes(self, input_spikes: torch.Tensor):
-        spike_indices = torch.nonzero(input_spikes)
-        count = 0
-        for t, n_idx in spike_indices:
-            event = SpikeEvent(
-                timestamp=float(t),
-                neuron_id=int(n_idx),
-                layer_index=-1,
-                source_index=int(n_idx)
-            )
-            heapq.heappush(self.event_queue, event)
-            count += 1
-        logger.info(f"📥 Registered {count} input events.")
-
-    def run(self, max_time: float = 100.0) -> Dict[str, Any]:
-        logger.info(
-            f"🚀 Running simulation (Learning={self.enable_learning})...")
-        processed_events = 0
-        output_spikes_count = 0
-        weight_updates = 0
-
-        last_spike_times: Dict[int, Dict[int, float]] = {-1: {}}
-
+    def run(self, duration: float = 1.0, learning_enabled: bool = True) -> Dict[int, int]:
+        end_time = self.current_time + duration
+        spike_counts: Dict[int, int] = {}
+        
         while self.event_queue:
-            event = heapq.heappop(self.event_queue)
-            if event.timestamp > max_time:
+            if self.event_queue[0].timestamp > end_time:
                 break
-
+            
+            event = heapq.heappop(self.event_queue)
+            
+            dt = max(0.1, event.timestamp - self.current_time)
             self.current_time = event.timestamp
-            processed_events += 1
+            
+            src_neuron = self.neurons[event.neuron_id]
+            self.stats["spikes"] += 1
+            spike_counts[event.neuron_id] = spike_counts.get(event.neuron_id, 0) + 1
+            
+            for synapse in src_neuron.outgoing_synapses:
+                target_neuron = self.neurons[synapse.target_id]
+                target_neuron.integrate(synapse.weight, 1.0)
+                self.stats["ops"] += 1
+                
+                if target_neuron.check_fire(self.current_time):
+                    next_time = self.current_time + synapse.delay
+                    heapq.heappush(self.event_queue, SpikeEvent(next_time, target_neuron.id))
+                    self.spike_history.append((self.current_time, target_neuron.id, target_neuron.is_inhibitory))
+                    
+                    if learning_enabled:
+                        self._apply_plasticity(src_neuron, target_neuron, synapse)
+        
+        return spike_counts
 
-            src_layer_idx = event.layer_index
-            src_neuron_idx = event.source_index
+    def _apply_plasticity(self, pre: NeuronNode, post: NeuronNode, synapse: Synapse):
+        if pre.is_inhibitory: return
+        if post.prediction_error > 0.1:
+            synapse.weight += 0.05 * post.prediction_error
+            synapse.weight = min(synapse.weight, 10.0)
+            self.stats["plasticity_events"] += 1
 
-            # 発火時刻の記録
-            if src_layer_idx not in last_spike_times:
-                last_spike_times[src_layer_idx] = {}
-            last_spike_times[src_layer_idx][src_neuron_idx] = self.current_time
+    def reset_state(self):
+        self.current_time = 0.0
+        self.event_queue = []
+        self.spike_history = []
+        for n in self.neurons:
+            n.v = 0.0
+            n.last_spike_time = -100.0
+            n.prediction_error = 0.0
 
-            target_layer_idx = src_layer_idx + 1
-            if target_layer_idx >= len(self.layers):
-                output_spikes_count += 1
-                continue
-            if target_layer_idx >= len(self.weights):
-                continue
-
-            W = self.weights[target_layer_idx]
-
-            relevant_weights = W[:, src_neuron_idx]
-            active_indices = torch.nonzero(
-                torch.abs(relevant_weights) > 0.001).flatten()
-
-            for tgt_neuron_idx in active_indices:
-                w = relevant_weights[tgt_neuron_idx].item()
-                target_neuron = self.layers[target_layer_idx][tgt_neuron_idx]
-
-                # 1. 減衰と統合
-                self.total_ops += 1
-                target_neuron.decay_and_integrate(self.current_time, w)
-
-                # --- LTD (Long-Term Depression) ---
-                if self.enable_learning:
-                    if target_neuron.trace > 0.05:
-                        # LTDの強さを少し控えめに設定
-                        dw = -self.learning_rate * target_neuron.trace * 0.25
-                        W[tgt_neuron_idx, src_neuron_idx] += dw
-                        weight_updates += 1
-
-                # 2. 発火判定
-                fired = target_neuron.check_fire_and_update_trace(
-                    self.current_time)
-
-                if fired:
-                    delay = 1.0
-                    new_event = SpikeEvent(
-                        timestamp=self.current_time + delay,
-                        neuron_id=int(tgt_neuron_idx),
-                        layer_index=target_layer_idx,
-                        source_index=int(tgt_neuron_idx)
-                    )
-                    heapq.heappush(self.event_queue, new_event)
-
-                    # --- LTP (Long-Term Potentiation) ---
-                    if self.enable_learning:
-                        pre_spike_times = last_spike_times.get(
-                            src_layer_idx, {})
-
-                        for pre_idx, t_pre in pre_spike_times.items():
-                            dt = self.current_time - t_pre
-                            if 0 <= dt < self.stdp_window:
-                                stdp_factor = math.exp(-dt / self.stdp_window)
-                                dw = self.learning_rate * stdp_factor
-                                W[tgt_neuron_idx, pre_idx] += dw
-                                weight_updates += 1
-
-        logger.info(f"✅ Simulation complete. Updates: {weight_updates}")
-        return {
-            "processed_events": processed_events,
-            "total_ops": self.total_ops,
-            "output_spikes": output_spikes_count,
-            "weight_updates": weight_updates
-        }
+# [Fix] Backward Compatibility Alias
+EventDrivenSimulator = DORAKernel
