@@ -1,6 +1,6 @@
 # ファイルパス: snn_research/cognitive_architecture/hippocampus.py
-# Title: Hippocampus (Short-term Episodic Memory) with Flushing
-# Description: 短期記憶を管理し、睡眠時に長期記憶へ転送(flush)するための機能を提供。
+# 日本語タイトル: Hippocampus (Episodic Memory Buffer)
+# 目的: 短期記憶の管理。Legacy API (store_episode) のサポートを追加。
 
 import torch
 import torch.nn as nn
@@ -52,8 +52,20 @@ class Hippocampus(nn.Module):
         # 容量オーバー時の処理 (古いものを削除)
         if len(self.episodic_buffer) > self.capacity:
             removed = self.episodic_buffer.pop(0)
-            # ログ出力したければここで
+            # 必要であればログ出力
             
+    def store_episode(self, vector: torch.Tensor):
+        """
+        Legacy Compatibility Method.
+        単一のテンソルをエピソードとして保存する。
+        mypyエラー 'Tensor not callable' の回避と、旧コードとの互換性維持のため。
+        """
+        self.process({
+            "embedding": vector.detach().cpu(), 
+            "timestamp": time.time(),
+            "source": "legacy_store_episode"
+        })
+
     def retrieve(self, query_vector: torch.Tensor, k: int = 1) -> List[Dict[str, Any]]:
         """
         (簡易実装) コサイン類似度などで検索するロジックのプレースホルダー。
@@ -67,7 +79,7 @@ class Hippocampus(nn.Module):
 
     def flush_memories(self) -> List[Dict[str, Any]]:
         """
-        [Fix] 保持している全ての短期記憶を返し、バッファをクリアする。
+        保持している全ての短期記憶を返し、バッファをクリアする。
         睡眠時の記憶固定化(Consolidation)で使用される。
         """
         memories = list(self.episodic_buffer) # コピーを作成
@@ -78,5 +90,5 @@ class Hippocampus(nn.Module):
         self.episodic_buffer.clear()
 
     def forward(self, x):
-        # nn.Moduleとしてのダミー
+        # nn.Moduleとしてのダミー実装
         return x

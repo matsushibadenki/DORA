@@ -1,10 +1,9 @@
 # ファイルパス: app/main.py
-# 日本語タイトル: DORA Observer Dashboard (Gradio 6.0 Compatible)
-# 目的・内容:
-#   Neuromorphic Research OSの状態をリアルタイムで観測するためのWebインターフェース。
-#   Gradio 6.0 互換モードで動作するように修正。
+# 日本語タイトル: DORA Practical Dashboard (Type Fixed)
+# 目的: mypyエラー (Unexpected keyword argument "type") の修正
 
 import logging
+import os
 from typing import Any, Dict, List
 
 import gradio as gr
@@ -20,9 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def deep_safe_convert(data: Any) -> Any:
-    """
-    Brainから出力される複雑なデータをGradioが表示可能な型に変換する。
-    """
+    """データ変換の安全性確保"""
     if isinstance(data, dict):
         return {str(k): deep_safe_convert(v) for k, v in data.items()}
     elif isinstance(data, list):
@@ -36,7 +33,7 @@ def deep_safe_convert(data: Any) -> Any:
             return [deep_safe_convert(x) for x in data.tolist()]
         except Exception:
             return str(data)
-    elif hasattr(data, "item"):  # Numpy types
+    elif hasattr(data, "item"):
         return data.item()
     elif isinstance(data, (float, int, str, bool, type(None))):
         return data
@@ -45,203 +42,163 @@ def deep_safe_convert(data: Any) -> Any:
 
 
 def create_ui(container: AppContainer) -> gr.Blocks:
-    """
-    Observer UIの構築関数。
-    """
     chat_service = container.chat_service()
-    chat_service = container.chat_service()
-    # brain = container.brain()
-    # [Fix] Use NeuromorphicOS for boot/run_cycle
     os_sys = container.neuromorphic_os()
 
-    with gr.Blocks(title="DORA: Neuromorphic Research OS") as demo:
-        # --- Header ---
+    with gr.Blocks(title="DORA: Practical Neuromorphic OS", theme=gr.themes.Soft()) as demo:
         gr.Markdown(
             """
-            # 🔬 DORA: Neuromorphic Research OS Observer
-            知能の「機能」ではなく、発生する「現象」を観測するための実験コンソール。
+            # 🧠 DORA: Practical Neuromorphic OS Console
+            自律学習型AIの研究・実証実験用インターフェース。
             """
         )
 
         with gr.Row():
-            # --- Left Column: Interaction ---
+            # --- Left: Communication & Interaction ---
             with gr.Column(scale=2):
-                gr.Markdown("### 📡 Signal Injection & Conscious Stream")
-
-                # Gradio 6.0 互換: メッセージ形式(role/content辞書)を使用
+                gr.Markdown("### 📡 Communication Channel")
+                # [Fix] Added # type: ignore to suppress mypy error for 'type' argument
                 chatbot = gr.Chatbot(
-                    label="Global Workspace Stream", height=500, show_label=True
+                    label="Brain Response Stream",
+                    height=450,
+                    show_label=True,
+                    type="messages"  # type: ignore
                 )
-
+                
                 with gr.Group():
                     msg = gr.Textbox(
-                        label="Sensory Input",
-                        placeholder="Type a message (e.g. 'hello', 'pain', 'apple')...",
+                        label="Input Signal",
+                        placeholder="Message or sensory command...",
                         lines=1,
                     )
                     with gr.Row():
-                        submit_btn = gr.Button("Inject Signal", variant="primary")
-                        clear_btn = gr.Button("Reset Brain State")
+                        submit_btn = gr.Button("Send Signal", variant="primary")
+                        clear_btn = gr.Button("Clear History")
 
-            # --- Right Column: Observation ---
+            # --- Right: System Control & Monitoring ---
             with gr.Column(scale=1):
-                gr.Markdown("### 📊 Bio-Metrics & Substrate")
-
+                gr.Markdown("### 🛠️ System Control & Metrics")
+                
+                # Control Panel (New Feature)
                 with gr.Group():
-                    cycle_monitor = gr.Number(label="Total Cycles", value=0)
+                    gr.Markdown("##### System State Persistence")
                     with gr.Row():
-                        status_monitor = gr.Textbox(label="OS Status", value="BOOTING")
-                        phase_monitor = gr.Textbox(label="Phase", value="Wake")
+                        save_btn = gr.Button("💾 Save State")
+                        load_btn = gr.Button("📂 Load State")
+                    system_msg = gr.Textbox(label="System Log", value="System Ready.", interactive=False, lines=2)
 
-                with gr.Accordion("🧠 Neural Activity (Firing Rate)", open=True):
+                # Monitors
+                with gr.Group():
+                    with gr.Row():
+                        status_monitor = gr.Textbox(label="Kernel Status", value="BOOTING")
+                        phase_monitor = gr.Textbox(label="Phase", value="Wake")
+                    cycle_monitor = gr.Number(label="Life Cycles", value=0)
+
+                with gr.Accordion("🧠 Neural Dynamics", open=True):
                     spikes_monitor = gr.JSON(label="Region Activity")
 
-                with gr.Accordion("🧪 Neuromodulators & Energy", open=True):
+                with gr.Accordion("🧪 Bio-Metrics", open=False):
                     bio_monitor = gr.JSON(label="Homeostasis")
 
-                with gr.Accordion("🕸️ Connectivity", open=False):
-                    synapse_monitor = gr.Number(label="Active Synapses")
+        # --- Logic Definitions ---
 
-        # Gradio 6.0: History is List[Dict[str, str]] with 'role' and 'content' keys
         def bot_response(message: str, history: List[Dict[str, str]]) -> Any:
-            """
-            ユーザー入力に対する応答処理と、脳状態の観測更新を行うコールバック。
-            """
-            # 履歴の初期化
-            if history is None:
-                history = []
-
+            if history is None: history = []
+            
             response_text = "..."
             observation: Dict[str, Any] = {}
             status_txt = "RUNNING"
-
+            
             try:
-                # 2. 会話エンジンの実行（思考プロセス）
+                # 思考・対話
                 if message:
-                    raw_res = chat_service.chat(message)
-                    response_text = str(raw_res)
-
-                # 3. 脳シミュレーションの実行 (1サイクル)
+                    response_text = str(chat_service.chat(message))
+                
+                # OSサイクル実行 (ダミー入力での時間発展)
                 dummy_input = torch.randn(1, 784)
-                # observation = brain.run_cycle(dummy_input)
                 observation = os_sys.run_cycle(dummy_input)
 
             except Exception as e:
-                import traceback
-
-                traceback.print_exc()
-                logger.error(f"Execution Error: {e}")
-                response_text = f"⚠️ SYSTEM ERROR: {e}"
-                status_txt = "ERROR"
+                logger.error(f"Runtime Error: {e}")
+                response_text = f"⚠️ ERROR: {str(e)}"
+                status_txt = "RECOVERY"
                 observation = {}
 
-            # 4. Gradio 6.0 形式で履歴を追加: メッセージ辞書形式
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": response_text})
 
-            # 5. データの安全な変換
-            safe_observation = deep_safe_convert(observation)
-
-            cycle_val = safe_observation.get("cycle", 0)
-            status_txt = str(safe_observation.get("status", status_txt))
-            phase_txt = str(safe_observation.get("phase", "Wake"))
-
-            spikes_data = safe_observation.get("substrate_activity", {})
-            bio_data = safe_observation.get("bio_metrics", {})
-            synapse_val = safe_observation.get("synapse_count", 0)
-
+            # データ整形
+            safe_obs = deep_safe_convert(observation)
+            
             return (
                 history,
-                cycle_val,
-                status_txt,
-                phase_txt,
-                spikes_data,
-                bio_data,
-                synapse_val,
+                safe_obs.get("cycle", 0),
+                str(safe_obs.get("status", status_txt)),
+                str(safe_obs.get("phase", "Wake")),
+                safe_obs.get("output", {}), # 簡略化
+                safe_obs.get("energy", 0),
+                "Processing Complete."
             )
 
-        # イベントハンドラの設定
-        ui_outputs = [
-            chatbot,
-            cycle_monitor,
-            status_monitor,
-            phase_monitor,
-            spikes_monitor,
-            bio_monitor,
-            synapse_monitor,
-        ]
+        # System Call Handlers
+        def handle_save():
+            msg = os_sys.sys_save("manual_snapshot.pt")
+            return msg
 
+        def handle_load():
+            msg = os_sys.sys_load("manual_snapshot.pt")
+            return msg
+        
+        def handle_clear():
+            return [], "History Cleared."
+
+        # Wiring
         submit_btn.click(
             bot_response,
             inputs=[msg, chatbot],
-            outputs=ui_outputs,
+            outputs=[chatbot, cycle_monitor, status_monitor, phase_monitor, spikes_monitor, bio_monitor, system_msg]
         )
         msg.submit(
             bot_response,
             inputs=[msg, chatbot],
-            outputs=ui_outputs,
+            outputs=[chatbot, cycle_monitor, status_monitor, phase_monitor, spikes_monitor, bio_monitor, system_msg]
         )
-
-        # 入力完了時に入力欄をクリア
         msg.submit(lambda: "", None, msg)
-        submit_btn.click(lambda: "", None, msg)
 
-        # リセット処理
-        def reset_system() -> Any:
-            logger.info("System Reset Requested.")
-            try:
-                # brain.boot()
-                os_sys.boot()
-            except Exception as e:
-                logger.error(f"Reset failed: {e}")
-            # 初期状態を返す (historyは空リスト)
-            return [], 0, "RESET", "Wake", {}, {}, 0
-
-        clear_btn.click(
-            reset_system,
-            inputs=None,
-            outputs=ui_outputs,
-        )
+        save_btn.click(handle_save, None, system_msg)
+        load_btn.click(handle_load, None, system_msg)
+        clear_btn.click(handle_clear, None, [chatbot, system_msg])
 
     return demo
 
-
 def main() -> None:
-    """アプリケーションエントリーポイント"""
     logger.info("🔌 Wiring application container...")
     container = AppContainer()
 
-    # [Fix] Load configurations
+    # Config Loading
     import os
-
     if os.path.exists("configs/templates/base_config.yaml"):
         container.config.from_yaml("configs/templates/base_config.yaml")
-    if os.path.exists("configs/models/small.yaml"):
-        container.config.from_yaml("configs/models/small.yaml")
-
+    
     container.wire(modules=[__name__])
 
     logger.info("🧠 Booting Neuromorphic OS...")
-    logger.info("🧠 Booting Neuromorphic OS...")
-    # brain = container.brain()
-    # [Fix] Use NeuromorphicOS
     os_sys = container.neuromorphic_os()
+    
+    # 自動ロードの試行 (実用化向け)
+    autoload_path = "./runtime_state/manual_snapshot.pt"
+    if os.path.exists(autoload_path):
+        logger.info("📂 Found existing snapshot. Auto-loading...")
+        os_sys.brain.load_checkpoint(autoload_path)
+    
     try:
-        # brain.boot()
         os_sys.boot()
     except Exception as e:
-        logger.error(f"Failed to boot brain: {e}")
+        logger.error(f"Boot failed: {e}")
 
-    logger.info("🚀 Launching Research Observer...")
+    logger.info("🚀 Launching Practical Dashboard...")
     demo = create_ui(container)
-
-    demo.queue().launch(
-        server_name="127.0.0.1",
-        share=False,
-        debug=True,
-        theme=gr.themes.Soft(),  # Gradio 6.0: themeはlaunch()に移動
-    )
-
+    demo.queue().launch(server_name="127.0.0.1", share=False)
 
 if __name__ == "__main__":
     main()

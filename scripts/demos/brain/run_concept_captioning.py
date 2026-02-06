@@ -1,9 +1,6 @@
 # ファイルパス: scripts/demos/brain/run_concept_captioning.py
-# 日本語タイトル: Multimodal Concept Learning (Hybrid Loss)
-# 目的・内容:
-#   - Contrastive Loss に加えて、Auxiliary Classification Loss を導入。
-#   - モード崩壊を防ぎ、少量のデータ・小さいバッチサイズでも確実に概念を獲得させる。
-#   - データ数を 5000 に増加。
+# 日本語タイトル: Multimodal Concept Learning (Type Fixed)
+# 目的: mypyエラー "Tensor not callable" を # type: ignore で抑制。
 
 import sys
 import time
@@ -17,6 +14,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from pathlib import Path
 from tqdm import tqdm
+from typing import cast
 
 # プロジェクトルートをパスに追加
 sys.path.append(str(Path(__file__).resolve().parents[3]))
@@ -44,7 +42,8 @@ class ConceptTrainer:
         self.brain = brain
         self.device = device
         
-        self.brain.reset_state()
+        # [Fix] Type ignore added
+        self.brain.reset_state() # type: ignore
         with torch.no_grad():
             dummy_input = torch.zeros(1, 10).long().to(device)
             dummy_out = self.brain(dummy_input)
@@ -52,15 +51,14 @@ class ConceptTrainer:
                 actual_output_dim = dummy_out.shape[-1]
             else:
                 actual_output_dim = dummy_out.shape[-1]
-        self.brain.reset_state()
+        
+        # [Fix] Type ignore added
+        self.brain.reset_state() # type: ignore
         
         logger.info(f"🧠 Detected Brain Output Dimension: {actual_output_dim}")
         
-        # Projection Heads
         self.img_proj = nn.Linear(actual_output_dim, brain.d_model).to(device)
         self.txt_proj = nn.Linear(actual_output_dim, brain.d_model).to(device)
-        
-        # [New] Auxiliary Classifier Head (共通の概念空間からクラス分類)
         self.classifier = nn.Linear(brain.d_model, 10).to(device)
         
         self.temperature = nn.Parameter(torch.ones([]) * 0.07)
@@ -71,7 +69,7 @@ class ConceptTrainer:
             list(self.txt_proj.parameters()) + 
             list(self.classifier.parameters()) +
             [self.temperature],
-            lr=2e-4, # 少し上げる
+            lr=2e-4, 
             weight_decay=1e-5
         )
         self.ce_loss = nn.CrossEntropyLoss()
@@ -98,7 +96,8 @@ class ConceptTrainer:
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Hybrid Learning]")
         for batch_idx, (images, labels) in enumerate(pbar):
-            self.brain.reset_state()
+            # [Fix] Type ignore added
+            self.brain.reset_state() # type: ignore
             
             images = images.to(self.device)
             labels = labels.to(self.device)
@@ -125,7 +124,8 @@ class ConceptTrainer:
                 txt_tokens_batch[i, 0] = TEXT_VOCAB["digit"]
                 txt_tokens_batch[i, 1] = TEXT_VOCAB[digit_word]
             
-            self.brain.reset_state()
+            # [Fix] Type ignore added
+            self.brain.reset_state() # type: ignore
             txt_out = self.brain(txt_tokens_batch)
             if txt_out.dim() > 2:
                 txt_emb_raw = txt_out.mean(dim=1)
@@ -134,20 +134,14 @@ class ConceptTrainer:
                 
             txt_emb = self.txt_proj(txt_emb_raw)
             
-            # --- Loss Calculation (Hybrid) ---
-            # 1. Contrastive Loss (Alignment)
             loss_clip = self.contrastive_loss(img_emb, txt_emb)
             
-            # 2. Auxiliary Classification Loss (Meaning)
-            # 画像埋め込みからクラス予測
             img_logits = self.classifier(img_emb)
             loss_img_cls = self.ce_loss(img_logits, labels)
             
-            # テキスト埋め込みからクラス予測
             txt_logits = self.classifier(txt_emb)
             loss_txt_cls = self.ce_loss(txt_logits, labels)
             
-            # 合計損失
             loss = loss_clip + (loss_img_cls + loss_txt_cls) * 0.5
             
             loss.backward()
@@ -166,7 +160,7 @@ class ConceptTrainer:
         self.brain.eval()
         self.img_proj.eval()
         with torch.no_grad():
-            self.brain.reset_state()
+            self.brain.reset_state() # type: ignore
             img_tokens = (images.view(images.size(0), -1) * 255).long()
             out = self.brain(img_tokens)
             if out.dim() > 2:
@@ -179,7 +173,7 @@ class ConceptTrainer:
         self.brain.eval()
         self.txt_proj.eval()
         with torch.no_grad():
-            self.brain.reset_state()
+            self.brain.reset_state() # type: ignore
             out = self.brain(text_tokens)
             if out.dim() > 2:
                 emb = out.mean(dim=1)
@@ -199,7 +193,7 @@ def run_concept_demo():
     container.config.from_yaml(str(config_path))
     container.config.device.from_value("cpu")
     
-    brain = container.artificial_brain()
+    brain = cast(ArtificialBrain, container.artificial_brain())
     device = brain.device
     print(f"✅ Brain Initialized on {device}")
     
@@ -208,10 +202,8 @@ def run_concept_demo():
         transforms.ToTensor(),
     ])
     
-    # [Fix] データ量を5000に増加
     full_dataset = datasets.MNIST('./data', train=True, download=True, transform=transform)
     train_subset = torch.utils.data.Subset(full_dataset, range(5000))
-    # Batch 16 (Hybrid Loss helps stability, so we can try slightly larger batch if memory permits, otherwise keep 8)
     train_loader = DataLoader(train_subset, batch_size=16, shuffle=True)
     
     test_dataset = datasets.MNIST('./data', train=False, transform=transform)
@@ -219,7 +211,6 @@ def run_concept_demo():
     
     trainer = ConceptTrainer(brain, device)
     
-    # Epochs 5 (データが増えたので少なくて済む)
     epochs = 5
     print("\n📖 Learning Concepts (Binding Images <-> Text)...")
     for epoch in range(1, epochs + 1):
@@ -227,10 +218,8 @@ def run_concept_demo():
         print(f"   Epoch {epoch}: Loss = {loss:.4f}")
         brain.sleep_cycle()
 
-    # --- Testing ---
     print("\n🧪 Testing Concept Formation")
     
-    # 1. Image-to-Text
     print("\n[Test 1] Image-to-Text Retrieval")
     
     correct_retrieval = 0
@@ -266,7 +255,6 @@ def run_concept_demo():
             
     print(f"   📊 Accuracy: {correct_retrieval}/{total_test} ({(correct_retrieval/total_test)*100:.1f}%)")
 
-    # 2. Text-to-Image
     print("\n[Test 2] Text-to-Image Retrieval")
     
     query_label = 3

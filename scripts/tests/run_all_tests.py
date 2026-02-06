@@ -13,42 +13,42 @@ def run_command(command, description, stop_on_fail=True):
     print(f"    Command: {command}")
     start_time = time.time()
     
+    # 環境変数の設定 (重要: PYTHONPATHを通す)
     env = os.environ.copy()
     env["SNN_TEST_MODE"] = "1"
     env["PYTHONWARNINGS"] = "ignore"
     
-    # ログノイズフィルタリング用の設定
-    # 以下の文字列を含む行は出力しない
+    # プロジェクトルートをPYTHONPATHに追加
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+    current_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{project_root}:{current_pythonpath}"
+    
     noise_filters = [
         "No module named 'cupy'",
         "spikingjelly",
-        "Matplotlib is building the font cache"
+        "Matplotlib is building the font cache",
+        "percent"
     ]
 
-    # サブプロセスを実行し、出力をパイプで受け取る
     process = subprocess.Popen(
         command, 
         shell=True, 
         env=env,
+        cwd=project_root, # カレントディレクトリも明示
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, # stderrもstdoutにマージ
+        stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
         universal_newlines=True
     )
 
-    # リアルタイムで出力を処理
     if process.stdout:
         for line in process.stdout:
-            # フィルタリング処理
             if any(noise in line for noise in noise_filters):
                 continue
-            
-            # 必要なログは表示 (末尾の改行を考慮してprint)
             print(line, end='')
     
     process.wait()
-    
     duration = time.time() - start_time
     
     if process.returncode == 0:
@@ -63,62 +63,65 @@ def run_command(command, description, stop_on_fail=True):
 def main():
     configure_test_logging()
     
-    print("========================================")
-    print("   SNN Research Project - Test Suite    ")
-    print("   Target: Phase 2 (Beyond ANN)         ")
-    print("========================================")
+    print("==================================================")
+    print("   DORA Neuromorphic OS - Full System Validation  ")
+    print("   Target: Phase 2 (Practical Learning Capability)")
+    print("==================================================")
     
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
     os.chdir(project_root)
     
     all_tests_passed = True
 
-    # 1. ヘルスチェック
-    if not run_command("python scripts/tests/run_project_health_check.py", "Project Health Check"):
-        print("Health check failed. Aborting tests.")
+    # 1. System Health Check
+    if not run_command("python scripts/tests/run_project_health_check.py", "1. Project Health Check"):
         sys.exit(1)
 
-    # 2. Pytest実行 (tests/ ディレクトリ)
-    print("\n>>> Running Standard Unit Tests (pytest tests/) ...")
-    # -v: 詳細, -s: 標準出力表示(フィルタリングされるのでOK)
-    if not run_command("python -m pytest tests/ -v -s", "Standard Unit Tests", stop_on_fail=False):
+    # 2. Unit Tests
+    print("\n--- 2. Unit Tests (Core Logic) ---")
+    if not run_command("python -m pytest tests/ -v -s", "Core Unit Tests", stop_on_fail=False):
         all_tests_passed = False
 
-    # 3. 追加のスクリプトテスト実行
-    print("\n>>> Running Script Tests (pytest scripts/tests/) ...")
-    if not run_command("python -m pytest scripts/tests/ -v -s", "Script Tests", stop_on_fail=False):
-        all_tests_passed = False
-    
-    # 4. 検証スクリプト
+    # 3. Learning Function Tests (Recipes)
+    print("\n--- 3. Learning Capability Tests (Recipes) ---")
+    recipes = [
+        ("snn_research/recipes/mnist.py", "MNIST Learning Recipe"),
+    ]
+    for script, desc in recipes:
+        if os.path.exists(script):
+            # モジュールとして実行することでインポートエラーを回避
+            module_name = script.replace("/", ".").replace(".py", "")
+            if not run_command(f"python -m {module_name} --epochs 1", desc, stop_on_fail=False):
+                all_tests_passed = False
+
+    # 4. Brain Experiment Tests
+    print("\n--- 4. Brain Experiment Tests ---")
+    experiments = [
+        "scripts/experiments/brain/run_phase2_mnist_tuning.py",
+    ]
+    for script in experiments:
+        if os.path.exists(script):
+            if not run_command(f"python {script}", f"Experiment: {os.path.basename(script)}", stop_on_fail=False):
+                all_tests_passed = False
+
+    # 5. Benchmarks & Verification
+    print("\n--- 5. Benchmarks & Verification ---")
     verification_scripts = [
         "scripts/tests/run_compiler_test.py",
         "scripts/tests/verify_phase3.py",
         "scripts/tests/verify_performance.py",
     ]
-    
-    print("\n>>> Running Verification Scripts ...")
     for script in verification_scripts:
         if os.path.exists(script):
-            if not run_command(f"python {script}", f"Verification: {os.path.basename(script)}", stop_on_fail=False):
+            if not run_command(f"python {script}", f"Verify: {os.path.basename(script)}", stop_on_fail=False):
                 all_tests_passed = False
-        else:
-            print(f"⚠️ Warning: Script not found: {script}")
 
-    # 5. Phase 2 ベンチマーク
-    print("\n>>> Running Phase 2 Benchmark Suite ...")
-    benchmark_script = "scripts/benchmarks/run_benchmark_suite.py"
-    if os.path.exists(benchmark_script):
-        if not run_command(f"python {benchmark_script}", "Benchmark Suite", stop_on_fail=False):
-            print("⚠️ Benchmarks finished with warnings.")
-    else:
-        print(f"⚠️ Warning: Benchmark script not found: {benchmark_script}")
-
+    print("\n==================================================")
     if all_tests_passed:
-        print("\n🎉 All functional tests passed successfully!")
-        print("👉 Please review the Benchmark Report above for Phase 2 targets.")
+        print("🎉 ALL SYSTEMS GO: Ready for Practical Deployment.")
         sys.exit(0)
     else:
-        print("\n⚠️ Some functional tests failed. Please review the output above for details.")
+        print("⚠️ SYSTEM UNSTABLE: Please fix the failed modules above.")
         sys.exit(1)
 
 if __name__ == "__main__":

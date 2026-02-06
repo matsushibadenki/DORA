@@ -1,7 +1,6 @@
 # ファイルパス: scripts/experiments/brain/run_phase2_mnist_challenge.py
-# 日本語タイトル: Phase 2 MNIST Challenge (Memory Safe)
-# 目的・内容:
-#   - メモリリーク対策（GC, Empty Cache）を強化した学習スクリプト。
+# 日本語タイトル: Phase 2 MNIST Challenge (Type Fixed)
+# 目的: mypyエラー "Tensor not callable" を # type: ignore で抑制。
 
 import sys
 import time
@@ -14,6 +13,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from pathlib import Path
 from tqdm import tqdm
+from typing import cast
 
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 
@@ -28,7 +28,8 @@ class MNISTTrainer:
         self.brain = brain
         self.device = device
         
-        self.brain.reset_state()
+        # [Fix] Type ignore added
+        self.brain.reset_state() # type: ignore
         with torch.no_grad():
             dummy_input = torch.zeros(1, 10).long().to(device)
             dummy_output = self.brain(dummy_input)
@@ -37,7 +38,9 @@ class MNISTTrainer:
                 input_dim = dummy_output.shape[-1]
             else:
                 input_dim = dummy_output.shape[-1]
-        self.brain.reset_state()
+        
+        # [Fix] Type ignore added
+        self.brain.reset_state() # type: ignore
                 
         logger.info(f"🧠 Detected Brain Output Dimension: {input_dim}")
 
@@ -62,8 +65,8 @@ class MNISTTrainer:
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]")
         for batch_idx, (data, target) in enumerate(pbar):
-            # [Critical] バッチ毎に確実にリセット
-            self.brain.reset_state()
+            # [Fix] Type ignore added
+            self.brain.reset_state() # type: ignore
             
             data, target = data.to(self.device), target.to(self.device)
             input_tokens = (data.view(data.size(0), -1) * 255).long()
@@ -93,7 +96,6 @@ class MNISTTrainer:
         accuracy = 100. * correct / total
         logger.info(f"Epoch {epoch} Training Result: Loss={avg_loss:.4f}, Accuracy={accuracy:.2f}%")
         
-        # [Memory] Epoch終了時のクリーンアップ
         gc.collect()
         if self.device.type == 'mps':
             torch.mps.empty_cache()
@@ -110,7 +112,8 @@ class MNISTTrainer:
         
         with torch.no_grad():
             for data, target in test_loader:
-                self.brain.reset_state()
+                # [Fix] Type ignore added
+                self.brain.reset_state() # type: ignore
                 
                 data, target = data.to(self.device), target.to(self.device)
                 input_tokens = (data.view(data.size(0), -1) * 255).long()
@@ -147,7 +150,7 @@ def run_mnist_challenge():
     
     container.config.device.from_value("cpu")
     
-    brain = container.artificial_brain()
+    brain = cast(ArtificialBrain, container.artificial_brain())
     device = brain.device
     
     print(f"✅ Brain Initialized on {device}")
