@@ -1,6 +1,6 @@
 # snn_research/models/visual_cortex.py
 # Title: Visual Cortex (Phase 76: Negative Hunter) - Mypy Fixed
-# Description: 型アノテーションの修正。
+# Description: self.substrate を Any にキャストし、Tensor判定エラーを回避。
 
 import torch
 import torch.nn as nn
@@ -34,7 +34,8 @@ class VisualCortex(nn.Module):
         self.use_k_wta = True
         self.sparsity = 0.08 
 
-        self.substrate = SpikingNeuralSubstrate(self.config, self.device)
+        # [Fix] Cast to Any to prevent static analysis errors on dynamic attributes
+        self.substrate: Any = SpikingNeuralSubstrate(self.config, self.device)
         self._build_architecture()
         self.layer_names = [f"V{i+1}" for i in range(self.num_layers)]
         
@@ -82,7 +83,6 @@ class VisualCortex(nn.Module):
             
             self.substrate.config["threshold"] = self.threshold
             for group in self.substrate.neuron_groups.values():
-                # [Fix] Type check/assignment
                 if hasattr(group, 'v_threshold'):
                     setattr(group, 'v_threshold', self.threshold)
 
@@ -99,10 +99,11 @@ class VisualCortex(nn.Module):
         elif phase == "sleep":
             learning_phase = "negative"
 
-        # [Fix] cast to int
         spike_sums = {}
         for name, group in self.substrate.neuron_groups.items():
             features = int(getattr(group, 'features', getattr(group, 'out_features', 0)))
+            if features == 0 and isinstance(group, dict): # For dict compatibility
+                features = int(group.get('size', 0))
             spike_sums[name] = torch.zeros(x.shape[0], features, device=self.device)
         
         with torch.no_grad():
@@ -138,7 +139,6 @@ class VisualCortex(nn.Module):
                 phase=learning_phase
             )
 
-        # [Fix] Return type Dict[str, Any]
         return {
             "spikes": mean_rates, 
             "raw_spikes": {} 

@@ -1,6 +1,6 @@
 # ファイルパス: tests/cognitive_architecture/test_cognitive_components.py
-# タイトル: 認知コンポーネント単体テスト (修正版 v2)
-# 目的: PrefrontalCortexのAPI変更に伴うテストコードの修正。
+# タイトル: 認知コンポーネント単体テスト (修正版 v4)
+# 目的: test_memory_system_pipeline での記憶の重複排除によるアサーションエラーを修正。
 
 from snn_research.cognitive_architecture.intrinsic_motivation import IntrinsicMotivationSystem
 from snn_research.cognitive_architecture.global_workspace import GlobalWorkspace
@@ -27,7 +27,6 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 def mock_workspace():
     """GlobalWorkspaceのモックを作成するフィクスチャ。"""
     mock = MagicMock(spec=GlobalWorkspace)
-    # get_current_thoughtがNoneを返すように設定 (デフォルト)
     mock.get_current_thought.return_value = None
     mock.subscribe = MagicMock()
     return mock
@@ -37,7 +36,6 @@ def mock_workspace():
 def mock_motivation_system():
     """IntrinsicMotivationSystemのモックを作成するフィクスチャ。"""
     mock = MagicMock(spec=IntrinsicMotivationSystem)
-    # get_internal_stateが空の辞書を返すように設定 (デフォルト)
     mock.get_internal_state.return_value = {}
     return mock
 
@@ -47,7 +45,6 @@ def mock_motivation_system():
 def test_amygdala_evaluates_positive_emotion():
     amygdala = Amygdala()
     result = amygdala.process("素晴らしい成功体験でした。")
-
     assert result is not None
     assert result['valence'] > 0.0
     print("\n✅ Amygdala: ポジティブな感情の評価テストに成功。")
@@ -56,18 +53,14 @@ def test_amygdala_evaluates_positive_emotion():
 def test_amygdala_evaluates_negative_emotion():
     amygdala = Amygdala()
     result = amygdala.process("危険なエラーが発生し、失敗した。")
-
     assert result is not None
     assert result['valence'] < 0.0
     print("✅ Amygdala: ネガティブな感情の評価テストに成功。")
 
 
 def test_amygdala_handles_mixed_emotion():
-    """ポジティブとネガティブが混在するテキストを評価できるかテストする。"""
     amygdala = Amygdala()
-    # "失敗"(負) と "喜び"(正) が混在
     result = amygdala.process("失敗の中に喜びを見出す。")
-
     assert result is not None
     assert -0.8 < result['valence'] < 0.8
     print("✅ Amygdala: 混合感情の評価テストに成功。")
@@ -75,15 +68,12 @@ def test_amygdala_handles_mixed_emotion():
 
 def test_amygdala_handles_neutral_text():
     amygdala = Amygdala()
-    # 辞書に含まれない単語のみ
     result = amygdala.process("これは机です。")
-    # 感情語がヒットしない場合は None が返る実装
     assert result is None
     print("✅ Amygdala: 中立的なテキスト(ヒットなし)の評価テストに成功。")
 
 
 def test_amygdala_handles_empty_string():
-    """空の文字列が入力された場合にエラーなくNoneを返すかテストする。"""
     amygdala = Amygdala()
     result = amygdala.process("")
     assert result is None
@@ -117,9 +107,8 @@ def test_basal_ganglia_rejects_low_value_actions(mock_workspace):
 def test_basal_ganglia_emotion_modulates_selection(mock_workspace):
     basal_ganglia = BasalGanglia(
         workspace=mock_workspace, selection_threshold=0.5)
-    candidates = [{'action': 'run_away', 'value': 0.6}]  # 価値を少し下げる
-    fear_context = {'valence': -0.8, 'arousal': 0.9}  # 恐怖
-    # 恐怖(高覚醒)により閾値が下がり、通常なら棄却される行動が選択されるはず
+    candidates = [{'action': 'run_away', 'value': 0.6}]
+    fear_context = {'valence': -0.8, 'arousal': 0.9}
     selected_fear = basal_ganglia.select_action(
         candidates, emotion_context=fear_context)
     assert selected_fear is not None and selected_fear['action'] == 'run_away'
@@ -134,7 +123,6 @@ def test_basal_ganglia_handles_no_candidates(mock_workspace):
 
 
 def test_basal_ganglia_handles_none_emotion_context(mock_workspace):
-    """emotion_contextがNoneの場合にエラーなく動作するかテストする。"""
     basal_ganglia = BasalGanglia(
         workspace=mock_workspace, selection_threshold=0.5)
     candidates = [{'action': 'A', 'value': 0.6}]
@@ -159,7 +147,6 @@ def test_cerebellum_and_motor_cortex_pipeline():
 
 
 def test_cerebellum_handles_empty_action():
-    """小脳が空の行動計画を受け取った場合のテスト。"""
     cerebellum = Cerebellum()
     commands = cerebellum.refine_action_plan({})
     assert commands == []
@@ -167,7 +154,6 @@ def test_cerebellum_handles_empty_action():
 
 
 def test_motor_cortex_handles_empty_commands():
-    """運動野が空のコマンドリストを受け取った場合のテスト。"""
     motor_cortex = MotorCortex()
     log = motor_cortex.execute_commands([])
     assert log == []
@@ -176,13 +162,22 @@ def test_motor_cortex_handles_empty_commands():
 # --- Hippocampus & Cortex (Memory System) Tests ---
 
 
-def test_memory_system_pipeline():
-    hippocampus = Hippocampus(capacity=3)
+def test_memory_system_pipeline(tmp_path):
+    # テスト用の一時ファイルを使用（本番DBを読み込まない）
+    test_db_path = tmp_path / "test_memory_pipeline.json"
+    
+    hippocampus = Hippocampus(capacity=3, storage_file=str(test_db_path))
     cortex = Cortex()
 
+    # 初期状態が空であることを確認 (安全策)
+    assert len(hippocampus.episodic_buffer) == 0
+
     # 1. 短期記憶へ保存
+    # Fix: Tensorの形状を変えることで、トリガー文字列("Tensor Pattern ...")を変え、
+    #      海馬の重複排除ロジックに引っかからないようにする。
     hippocampus.store_episode(torch.ones(1, 784))
-    hippocampus.store_episode(torch.ones(1, 784))
+    hippocampus.store_episode(torch.ones(1, 128)) # Shape changed to avoid deduplication
+    
     assert len(hippocampus.episodic_buffer) == 2
 
     # 2. 長期記憶へ固定化
@@ -199,17 +194,27 @@ def test_memory_system_pipeline():
     print("✅ Hippocampus -> Cortex (記憶固定化) パイプラインのテストに成功。")
 
 
-def test_hippocampus_handles_empty_episode():
+def test_hippocampus_handles_empty_episode(tmp_path):
     """海馬が空のエピソードを保存しようとした場合のテスト。"""
-    hippocampus = Hippocampus(capacity=3)
+    test_db_path = tmp_path / "test_memory_empty.json"
+    hippocampus = Hippocampus(capacity=3, storage_file=str(test_db_path))
+    
+    # 初期状態が空であることを確認
+    assert len(hippocampus.episodic_buffer) == 0
+    
     hippocampus.store_episode(torch.ones(784))
     assert len(hippocampus.episodic_buffer) == 1
     print("✅ Hippocampus: 空のエピソード保存テストに成功。")
 
 
-def test_hippocampus_stores_valid_pattern():
+def test_hippocampus_stores_valid_pattern(tmp_path):
     """有効なパターン入力時にエピソード記憶が保存されるかテスト。"""
-    hippocampus = Hippocampus(capacity=3)
+    test_db_path = tmp_path / "test_memory_valid.json"
+    hippocampus = Hippocampus(capacity=3, storage_file=str(test_db_path))
+    
+    # 初期状態が空であることを確認
+    assert len(hippocampus.episodic_buffer) == 0
+    
     dummy_input = torch.ones(784)
     hippocampus.store_episode(dummy_input)
     assert len(hippocampus.episodic_buffer) == 1
@@ -217,7 +222,6 @@ def test_hippocampus_stores_valid_pattern():
 
 
 def test_cortex_handles_non_string_input():
-    """大脳皮質が文字列でない入力のエピソードを処理しようとした場合のテスト。"""
     cortex = Cortex()
     try:
         cortex.consolidate_memory("test_concept", 12345)  # type: ignore
@@ -228,7 +232,6 @@ def test_cortex_handles_non_string_input():
 
 
 def test_cortex_retrieves_nonexistent_concept():
-    """大脳皮質が存在しない概念を検索した場合のテスト。"""
     cortex = Cortex()
     dummy_vec = torch.randn(128)
     results = cortex.retrieve(dummy_vec)
@@ -240,17 +243,13 @@ def test_cortex_retrieves_nonexistent_concept():
 
 @pytest.mark.parametrize("context, expected_keyword", [
     ({"external_request": "summarize the document"}, "Fulfill external request"),
-    # boredom > 0.8 で "Find something new"
     ({"internal_state": {"boredom": 0.9}}, "Find something new"),
-    # curiosity > 0.8 で "Investigate curiosity target"
     ({"internal_state": {"curiosity": 0.9}}, "Investigate curiosity target"),
-    # valence < -0.7 で "Ensure safety"
     ({"internal_state": {"boredom": 0.1, "curiosity": 0.2}, "conscious_content": {
      "type": "emotion", "valence": -0.9, "arousal": 0.8}}, "Ensure safety"),
-    ({}, "Survive and Explore"),  # 初期値/デフォルト
+    ({}, "Survive and Explore"),
 ])
 def test_prefrontal_cortex_decides_goals(context, expected_keyword, mock_workspace, mock_motivation_system):
-    # motivation_systemのモックが適切な内部状態を返すように設定
     mock_motivation_system.get_internal_state.return_value = context.get(
         "internal_state", {})
     mock_motivation_system.curiosity_context = "unknown"
@@ -258,14 +257,12 @@ def test_prefrontal_cortex_decides_goals(context, expected_keyword, mock_workspa
     pfc = PrefrontalCortex(workspace=mock_workspace,
                            motivation_system=mock_motivation_system)
 
-    # handle_conscious_broadcastの呼び出しを修正
     conscious_data = context.get("conscious_content", {})
     source = "receptor" if "external_request" in context else "internal"
     
     if "external_request" in context:
         conscious_data = context["external_request"]
 
-    # Fix: sourceとcontentを1つの辞書にまとめる
     broadcast_payload = {}
     if isinstance(conscious_data, dict):
         broadcast_payload = conscious_data.copy()
@@ -284,12 +281,10 @@ def test_prefrontal_cortex_decides_goals(context, expected_keyword, mock_workspa
 
 
 def test_prefrontal_cortex_handles_empty_context(mock_workspace, mock_motivation_system):
-    """PFCが空のコンテキストで目標決定を行う場合のテスト。"""
     mock_motivation_system.get_internal_state.return_value = {}
     pfc = PrefrontalCortex(workspace=mock_workspace,
                            motivation_system=mock_motivation_system)
     
-    # Fix: 単一の辞書引数に変更
     pfc.handle_conscious_broadcast({"source": "unknown"})
     
     goal = pfc.current_goal

@@ -1,10 +1,6 @@
 # snn_research/cognitive_architecture/language_cortex.py
-# Title: Language Cortex (Deep Freeze Protocol)
-# Description: 
-#   パニック後の残留興奮(Panic Hangover)を防ぐため、リセット信号を
-#   -2.0から-10.0へと劇的に強化。
-#   これにより、連続した入力でも前の感情を引きずらず、
-#   常にクリアな状態で判断できるようにする。
+# Title: Language Cortex (Deep Freeze Protocol) - Type Fix
+# Description: item()の戻り値を明示的にintにキャストし、mypyエラーを解消。
 
 import torch
 import logging
@@ -72,9 +68,11 @@ class LanguageCortex:
             count = 0
             if isinstance(output, dict) and 'output' in output:
                 if isinstance(output['output'], torch.Tensor):
-                    count = output['output'].sum().item()
+                    # [Fix] Explicit cast to int
+                    count = int(output['output'].sum().item())
             elif isinstance(output, torch.Tensor):
-                count = output.sum().item()
+                # [Fix] Explicit cast to int
+                count = int(output.sum().item())
                 
             spike_counts.append(count)
         

@@ -1,14 +1,12 @@
 # snn_research/cognitive_architecture/artificial_brain.py
-# Title: Artificial Brain v21.21 (Simple Call)
-# Description: 
-#   SNNCore への呼び出しを単純な位置引数1つに戻す。
-#   受け取り側が万能化したため、これで最も安全に動作する。
+# Title: Artificial Brain v21.24 (Knowledge Retrieval Added)
+# Description: retrieve_knowledgeメソッドを追加し、テストエラーを解消。
 
 import torch
 import torch.nn as nn
 import logging
 import os
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, List
 
 from snn_research.core.snn_core import SpikingNeuralSubstrate
 from snn_research.models.experimental.bit_spike_mamba import BitSpikeMamba
@@ -42,7 +40,7 @@ class ArtificialBrain(nn.Module):
         self.core_torch = BitSpikeMamba(d_model=128, depth=2, vocab_size=128, expand=2, use_head=True).to(self.device)
         self.kernel_substrate = None
         if self.use_kernel:
-            self.kernel_substrate = SpikingNeuralSubstrate(self.config, device="cpu")
+            self.kernel_substrate = SpikingNeuralSubstrate(self.config, device=torch.device("cpu"))
             self.kernel_substrate.compile(self.core_torch)
             
         self.astrocyte = kwargs.get("astrocyte_network") or AstrocyteNetwork(max_energy=3000.0, device=str(self.device))
@@ -55,7 +53,7 @@ class ArtificialBrain(nn.Module):
         self.sleep_manager = SleepConsolidator(substrate=self.core_torch)
         self.hippocampus = Hippocampus(capacity=200, input_dim=self.d_model, device=str(self.device))
         
-        logger.info(f"🚀 Artificial Brain v21.21 (Simple Call) initialized.")
+        logger.info(f"🚀 Artificial Brain v21.24 (Knowledge Retrieval Added) initialized.")
 
     def wake_up(self):
         logger.info(">>> 🌅 Brain Wake Up sequence initiated <<<")
@@ -88,10 +86,7 @@ class ArtificialBrain(nn.Module):
         
         if self.use_kernel and self.kernel_substrate:
             if inp.device.type != "cpu": inp = inp.cpu()
-            
-            # [SIMPLE CALL] 位置引数1つで呼ぶ。受け取り側が万能なのでこれでOK。
             output = self.kernel_substrate(inp)
-            
             uncertainty = getattr(self.kernel_substrate, "uncertainty_score", 0.0)
             self.astrocyte.consume_energy(0.05 + (uncertainty * 1.0))
             output = output.to(self.device)
@@ -110,6 +105,19 @@ class ArtificialBrain(nn.Module):
             "status": "active"
         }
 
+    def process_tick(self, dt: float) -> None:
+        self.astrocyte.consume_energy(0.01 * dt)
+        if self.is_awake and self.astrocyte.current_energy < 50.0:
+            logger.warning("⚠️ Energy critical! Initiating micro-sleep.")
+            self.sleep()
+
+    def get_brain_status(self) -> Dict[str, Any]:
+        return {
+            "awake": self.is_awake,
+            "energy": self.astrocyte.current_energy,
+            "cycles": self.sleep_cycle_count
+        }
+
     def perform_sleep_cycle(self, cycles: int = 5):
         self.sleep()
         logger.info(f"💤 REM Sleep Phase (x{cycles})...")
@@ -120,6 +128,39 @@ class ArtificialBrain(nn.Module):
             self.kernel_substrate.sleep_process()
             self.kernel_substrate.kernel.is_sleeping = False
         self.wake_up()
+
+    def load_checkpoint(self, path: str) -> None:
+        if os.path.exists(path):
+            try:
+                state = torch.load(path, map_location=self.device)
+                self.load_state_dict(state, strict=False)
+                logger.info(f"📂 Checkpoint loaded from {path}")
+            except Exception as e:
+                logger.error(f"❌ Failed to load checkpoint: {e}")
+        else:
+            logger.warning(f"⚠️ Checkpoint file not found: {path}")
+
+    # [Fix] Added method for knowledge retrieval to satisfy tests
+    def retrieve_knowledge(self, query: str) -> List[str]:
+        results = []
+        if self.hippocampus:
+            mem = self.hippocampus.recall(query)
+            if mem:
+                conf = mem.get('confidence', 1.0)
+                results.append(f"[Hippocampus] {mem['trigger']} (Conf: {conf:.2f})")
+        
+        # RAG System integration if available
+        if hasattr(self, 'rag_system') and self.rag_system:
+            try:
+                # Assuming RAG has a retrieve method
+                if hasattr(self.rag_system, 'retrieve'):
+                    res = self.rag_system.retrieve(query)
+                    if isinstance(res, list): results.extend([str(r) for r in res])
+                    else: results.append(str(res))
+            except Exception as e:
+                logger.warning(f"RAG retrieval failed: {e}")
+                
+        return results
 
     @property
     def cycle_count(self): return self.sleep_cycle_count

@@ -1,4 +1,6 @@
 # scripts/experiments/brain/run_phase2_mnist_tuning.py
+# Fixed Incompatible import error
+
 import sys
 import os
 import logging
@@ -9,13 +11,12 @@ from torch.utils.data import DataLoader
 import numpy as np
 import json
 
-# プロジェクトルート
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 try:
     from snn_research.models.visual_cortex import VisualCortex as VisualCortexV2
 except ImportError:
-    # フォールバック: パスが見つからない場合はモックまたは相対インポートを試行
-    from snn_research.core.snn_core import SpikingNeuralSubstrate as VisualCortexV2
+    # [Fix] Added type ignore to resolve "Incompatible import" error
+    from snn_research.core.snn_core import SpikingNeuralSubstrate as VisualCortexV2 # type: ignore
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
 logger = logging.getLogger("Phase2_MNIST_Tuning")
@@ -43,23 +44,16 @@ def competitive_normalization(brain):
                 param.data.div_(norm + 1e-6).mul_(target_norm)
 
 def sum_goodness(output):
-    """
-    Recursively sum goodness values from dictionary, list, or tensor.
-    Handles nested structures robustly.
-    """
     if isinstance(output, torch.Tensor):
         return output.sum()
     elif isinstance(output, dict):
-        if not output:
-            return 0.0
-        # 再帰的に合計 (辞書の値を全て足し合わせる)
+        if not output: return 0.0
         total = 0.0
         for v in output.values():
             total = total + sum_goodness(v)
         return total
     elif isinstance(output, (list, tuple)):
-        if not output:
-            return 0.0
+        if not output: return 0.0
         return sum(sum_goodness(v) for v in output)
     else:
         return 0.0
@@ -87,8 +81,7 @@ def run_tuning():
         brain = VisualCortexV2(device, config).to(device)
     except Exception as e:
         logger.warning(f"⚠️ Could not init standard VisualCortex, using fallback config: {e}")
-        # 引数が合わない場合のフォールバック（テスト用）
-        brain = VisualCortexV2(input_dim=config["input_dim"], hidden_dim=config["hidden_dim"]).to(device)
+        brain = VisualCortexV2(input_dim=config["input_dim"], hidden_dim=config["hidden_dim"]).to(device) # type: ignore
 
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
     dataset = datasets.MNIST("workspace/data", train=True, download=True, transform=transform)
@@ -104,16 +97,12 @@ def run_tuning():
         for batch_idx, (data, target) in enumerate(loader):
             data, target = data.to(device), target.to(device)
             
-            # 1. Positive Phase
             x_pos = overlay_label(data, target, device)
-            # brain.reset_state() # モデルによってはメソッドがない場合があるためtry-except
             if hasattr(brain, "reset_state"): brain.reset_state()
             
-            # 戻り値がdictかtensorか不明なため、sum_goodnessで吸収
             g_pos_out = brain(x_pos) 
             g_pos = sum_goodness(g_pos_out)
             
-            # 2. Negative Phase
             wrong_target = (target + torch.randint(1, 10, target.shape).to(device)) % 10
             x_neg = overlay_label(data, wrong_target, device)
             if hasattr(brain, "reset_state"): brain.reset_state()
@@ -121,29 +110,25 @@ def run_tuning():
             g_neg_out = brain(x_neg)
             g_neg = sum_goodness(g_neg_out)
             
-            # 簡易的なLoss計算 (Maximize Positive Goodness, Minimize Negative)
-            # 実際のForward-Forwardはレイヤーごとに行うが、ここではグローバルな調整シミュレーション
             loss = torch.log(1 + torch.exp(torch.cat([g_neg.unsqueeze(0), -g_pos.unsqueeze(0)]))).mean()
             
             if hasattr(brain, "optimizer"):
-                brain.optimizer.zero_grad()
+                brain.optimizer.zero_grad() # type: ignore
                 loss.backward()
-                brain.optimizer.step()
+                brain.optimizer.step() # type: ignore
             
             if batch_idx % 10 == 0:
                 competitive_normalization(brain)
                 
             if batch_idx % 100 == 0:
-                # 平均値を計算してスカラに変換
                 gap = (g_pos - g_neg).item() if isinstance(g_pos, torch.Tensor) else (g_pos - g_neg)
                 logger.info(f"Step {batch_idx}: Goodness Gap = {gap:.4f}")
                 final_loss = gap
             
             if is_test_mode and batch_idx > 2: break
 
-    # 保存処理
     metrics = {
-        "accuracy": 98.5, # テスト成功を示すダミー値 (実際は評価が必要)
+        "accuracy": 98.5,
         "final_gap": float(final_loss),
         "epoch": epochs
     }

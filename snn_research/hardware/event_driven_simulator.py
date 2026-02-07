@@ -1,8 +1,6 @@
 # snn_research/hardware/event_driven_simulator.py
-# Title: DORA Kernel v3.8 (Input Ready)
-# Description: 
-#   push_input_spikes メソッドを追加し、外部からのデータ注入を可能にする。
-#   AttributeError: 'DORAKernel' object has no attribute 'push_input_spikes' を解消。
+# Title: DORA Kernel v3.9 (Stats Property Added)
+# Description: total_spike_countプロパティを追加し、snn_core.pyからのアクセスエラーを修正。
 
 import heapq
 import logging
@@ -65,7 +63,12 @@ class DORAKernel:
         self.stats = {"ops": 0, "spikes": 0, "plasticity_events": 0, "synapses_created": 0, "synapses_pruned": 0, "current_synapses": 0, "surprise_index": 0.0}
         self.structural_plasticity_enabled = True; self.is_sleeping = False
         self.pruning_threshold = 0.1; self.growth_probability = 0.005
-        logger.info("🧠 DORA Kernel v3.8 (Input Ready) initialized")
+        logger.info("🧠 DORA Kernel v3.9 (Stats Property Added) initialized")
+
+    @property
+    def total_spike_count(self) -> int:
+        """API Compatibility for SNN Core"""
+        return self.stats.get("spikes", 0)
 
     def create_layer_neurons(self, count, layer_id, v_thresh=0.5):
         start = len(self.neurons)
@@ -94,10 +97,8 @@ class DORAKernel:
             n.outgoing_synapses.append(Synapse(tgt, (-abs(raw) if n.is_inhibitory else abs(raw))*scale, delay=random.uniform(1.0, 3.0)))
 
     def push_input_spikes(self, neuron_indices: List[int], timestamp: float):
-        """[New] 外部からのスパイク入力をイベントキューに追加する"""
         for nid in neuron_indices:
             if nid < len(self.neurons):
-                # 入力スパイクは即時発火イベントとして扱う
                 heapq.heappush(self.event_queue, SpikeEvent(timestamp, nid))
 
     def run(self, duration=1.0, learning_enabled=True):

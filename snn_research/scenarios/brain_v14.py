@@ -1,6 +1,6 @@
-# ファイルパス: snn_research/scenarios/brain_v14.py
-# 日本語タイトル: Brain V14 シナリオ (Type Fixed)
-# 概要: mypyエラー回避版
+# snn_research/scenarios/brain_v14.py
+# Title: Brain V14 Scenario (Type Fixed)
+# Description: mypyエラー回避版
 
 from app.containers import BrainContainer
 import os
@@ -43,7 +43,8 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
     kb_size = len(rag.knowledge_base)
     logger.info(f"   - RAG System initialized. Current Knowledge Base Size: {kb_size}")
 
-    brain = cast(ArtificialBrain, container.artificial_brain())
+    # [Fix] Explicit typing to Any to avoid "Tensor not callable" inference error
+    brain: Any = container.artificial_brain()
 
     engine_name = "unknown"
     if hasattr(brain, 'thinking_engine'):
@@ -111,7 +112,6 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
     if brain.state != "SLEEPING":
         print("   Forcing sleep cycle due to roadmap schedule...")
         if hasattr(brain, 'sleep_cycle'):
-            # [Fix] Type ignore added
             brain.sleep_cycle() # type: ignore
         else:
             brain.sleep()
@@ -121,7 +121,6 @@ def run_scenario(config_path: str = "configs/experiments/brain_v14_config.yaml")
     print(f"   🧠 Checking Long-Term Memory for '{query}':")
 
     if hasattr(brain, 'retrieve_knowledge'):
-        # [Fix] Type ignore added
         knowledge = brain.retrieve_knowledge(query) # type: ignore
         if not knowledge:
             print("      (No knowledge retrieved directly from Cortex retrieval)")

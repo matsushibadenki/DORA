@@ -19,5 +19,19 @@
     "action": "🏃💨 EMERGENCY EVACUATION! (Running away)",
     "intensity": 19.1,
     "confidence": 1.0
+  },
+  {
+    "timestamp": "2026-02-07 22:47:13",
+    "trigger": "Tensor Pattern torch.Size([1, 784])",
+    "action": "stored",
+    "intensity": 20.0,
+    "confidence": 1.0
+  },
+  {
+    "timestamp": "2026-02-07 22:47:16",
+    "trigger": "Tensor Pattern torch.Size([784])",
+    "action": "stored",
+    "intensity": 20.0,
+    "confidence": 1.0
   }
 ]
