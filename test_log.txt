@@ -1,0 +1,53 @@
+
+============================================================
+🧪 DORA Stability Benchmark v2.1: Real Brain Testing
+============================================================
+
+2026-02-07 13:20:51,224 - StabilityBenchV2 - INFO - Initializing DORA Brain in Event-Driven Kernel Mode...
+2026-02-07 13:20:51,231 - snn_research.hardware.event_driven_simulator - INFO - 🧠 DORA Kernel v3.8 (Input Ready) initialized
+2026-02-07 13:20:51,231 - snn_research.core.snn_core - INFO - ⚡ SpikingNeuralSubstrate v3.11 (Universal Adapter) initialized.
+2026-02-07 13:20:51,231 - snn_research.core.snn_core - INFO - 🔨 Compiling BitSpikeMambaModel...
+2026-02-07 13:20:51,231 - snn_research.hardware.event_driven_simulator - INFO - 🧠 DORA Kernel v3.8 (Input Ready) initialized
+2026-02-07 13:20:51,637 - snn_research.core.snn_core - INFO - ✅ Compilation Successful. Neurons: 1536
+2026-02-07 13:20:51,637 - snn_research.cognitive_architecture.intrinsic_motivation - INFO - 🔥 Intrinsic Motivation System v2.6 initialized.
+2026-02-07 13:20:51,637 - snn_research.cognitive_architecture.rag_snn - INFO - 📂 RAG knowledge loaded from ./runtime_state/memory (Entries: 0)
+2026-02-07 13:20:51,637 - snn_research.cognitive_architecture.rag_snn - INFO - 📁 Vector store initialized at: ./runtime_state/memory
+2026-02-07 13:20:51,648 - sentence_transformers.SentenceTransformer - INFO - Use pytorch device_name: mps
+2026-02-07 13:20:51,648 - sentence_transformers.SentenceTransformer - INFO - Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+2026-02-07 13:20:54,309 - snn_research.cognitive_architecture.prefrontal_cortex - INFO - 🧠 Prefrontal Cortex (PFC) initialized with Orthogonal Geometry (d=128).
+🧠 大脳基底核モジュールが初期化され、Workspaceを購読しました。
+2026-02-07 13:20:54,309 - snn_research.modules.reflex_module - INFO - ⚡ Reflex Module initialized (Threshold: 2.0).
+2026-02-07 13:20:54,309 - snn_research.cognitive_architecture.motor_cortex - INFO - 🦾 Motor Cortex initialized (Actuators: ['default'], Device: cpu).
+2026-02-07 13:20:54,309 - snn_research.cognitive_architecture.artificial_brain - INFO - 🚀 Artificial Brain v21.21 (Simple Call) initialized.
+2026-02-07 13:20:54,309 - snn_research.core.neuromorphic_os - INFO - 🖥️ Neuromorphic OS Kernel initialized. Tick Rate: 10.0Hz
+2026-02-07 13:20:54,309 - snn_research.core.neuromorphic_os - INFO - >>> Booting Neuromorphic OS... <<<
+2026-02-07 13:20:54,309 - snn_research.cognitive_architecture.artificial_brain - INFO - >>> 🌅 Brain Wake Up sequence initiated <<<
+2026-02-07 13:20:54,310 - StabilityBenchV2 - INFO - ✅ Kernel Active. Neurons: 1536
+
+🔄 Run 1/3
+⚡ Running Noise Robustness Benchmark...
+   Noise 0.0: Accuracy 0.920
+   Noise 0.1: Accuracy 1.000
+   Noise 0.3: Accuracy 1.000
+   Noise 0.5: Accuracy 1.000
+
+🔄 Run 2/3
+⚡ Running Noise Robustness Benchmark...
+   Noise 0.0: Accuracy 1.000
+   Noise 0.1: Accuracy 1.000
+   Noise 0.3: Accuracy 0.960
+   Noise 0.5: Accuracy 0.950
+
+🔄 Run 3/3
+⚡ Running Noise Robustness Benchmark...
+   Noise 0.0: Accuracy 0.960
+   Noise 0.1: Accuracy 1.000
+   Noise 0.3: Accuracy 1.000
+   Noise 0.5: Accuracy 0.970
+
+============================================================
+📊 Final Results Summary
+   Runs: 3
+   Average Stability Score: 0.9800
+   Standard Deviation: 0.0020
+============================================================
