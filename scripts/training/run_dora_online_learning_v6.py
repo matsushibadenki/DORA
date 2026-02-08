@@ -1,6 +1,6 @@
 # scripts/training/run_dora_online_learning_v6.py
-# Japanese Title: DORA オンライン学習 v16.0 (ポアソン発火率・強度整合版)
-# Description: 理論計算に基づき、入力スパイクの頻度と重みの積が閾値を確実に超えるよう再設計。沈黙を打破し、教師あり学習を成立させる。
+# Japanese Title: DORA オンライン学習 v17.0 (適応的閾値・選択性強化版)
+# Description: 発火頻度に応じて閾値が変動する「適応的閾値」を導入し、過剰発火を抑制。画像特徴とラベルの相関を学習する能力を高める。
 
 import sys
 import os
@@ -12,19 +12,71 @@ from tqdm import tqdm
 
 sys.path.append(os.getcwd())
 
+# -----------------------------------------------------------------------------
+# 【モンキーパッチ】適応的閾値を持つニューロン
+# -----------------------------------------------------------------------------
+import snn_research.hardware.event_driven_simulator as sim_module
+
+class AdaptiveNeuronNode(sim_module.NeuronNode):
+    def __init__(self, neuron_id, v_thresh, v_reset, refractory_period):
+        super().__init__(neuron_id, v_thresh, v_reset, refractory_period)
+        # 適応的閾値用のパラメータ
+        self.v_thresh_base = v_thresh
+        self.v_thresh_adaptive = 0.0
+        self.theta_plus = 2.0   # 発火ごとに閾値をこれだけ上げる
+        self.theta_decay = 0.999 # 閾値の減衰率 (時定数的に振る舞う)
+        self.last_update_time = 0.0
+
+    def integrate(self, weight, dt):
+        # 単純積分 (Leakなし)
+        self.v += weight
+        # 電位クランプ
+        self.v = max(-10.0, min(100.0, self.v))
+
+    def check_fire(self, current_time):
+        # 閾値の自然減衰を計算
+        steps = current_time - self.last_update_time
+        if steps > 0:
+            # 簡易的な指数減衰近似
+            self.v_thresh_adaptive *= (self.theta_decay ** steps)
+            self.last_update_time = current_time
+
+        # 実効閾値
+        effective_thresh = self.v_thresh_base + self.v_thresh_adaptive
+
+        # 不応期チェック
+        if (current_time - self.last_spike_time) < self.refractory_period:
+            return False
+
+        # 発火判定
+        if self.v >= effective_thresh:
+            self.v = self.v_reset
+            self.last_spike_time = current_time
+            
+            # 発火したので閾値を上げる（適応）
+            self.v_thresh_adaptive += self.theta_plus
+            return True
+            
+        return False
+
+# クラスを差し替え
+sim_module.NeuronNode = AdaptiveNeuronNode
+
+# -----------------------------------------------------------------------------
+
 from snn_research.core.snn_core import SpikingNeuralSubstrate
 from snn_research.core.neuromorphic_os import NeuromorphicOS
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("DORA_Learner_v16_TunedPoisson")
+logger = logging.getLogger("DORA_Learner_v17_Adaptive")
 
 # -----------------------------------------------------------------------------
-# ポアソン入力対応SNNコア (レート調整版)
+# ポアソンSNN (v16ベース)
 # -----------------------------------------------------------------------------
 class PoissonSNN(SpikingNeuralSubstrate):
     def forward_step(self, ext_inputs: dict, learning: bool = True, dreaming: bool = False, **kwargs) -> dict:
-        simulation_duration = kwargs.get("duration", 30.0) # 30ms
+        simulation_duration = kwargs.get("duration", 30.0)
         
         if not dreaming:
             for name, tensor in ext_inputs.items():
@@ -35,11 +87,7 @@ class PoissonSNN(SpikingNeuralSubstrate):
                     active_indices = np.where(input_probs > 0.2)[0]
                     
                     for idx in active_indices:
-                        # 【修正1】レート係数を 0.1 -> 0.2 に上げ、スパイク密度を高める
-                        # 確率1.0の画素は、平均して5ステップに1回発火する
-                        rate = input_probs[idx] * 0.2 
-                        
-                        # 確率的スパイク生成
+                        rate = input_probs[idx] * 0.25 # レート係数を少し強めに
                         for t in range(int(simulation_duration)):
                             if np.random.random() < rate:
                                 self.kernel.push_input_spikes([int(start_id + idx)], self.kernel.current_time + t + 0.1)
@@ -58,22 +106,22 @@ class PoissonSNN(SpikingNeuralSubstrate):
 
 # -----------------------------------------------------------------------------
 
-class DORAOnlineLearnerV16:
+class DORAOnlineLearnerV17:
     def __init__(self, n_hidden=1000, device='cpu'):
         self.device = torch.device(device)
         self.n_hidden = n_hidden
         
         self.config = {
             "dt": 1.0, 
-            "t_ref": 1.0,   # 【修正2】不応期を短くして高頻度発火を許容
-            "tau_m": 20.0,
+            "t_ref": 2.0,
+            "tau_m": 100.0, # ほぼ積分器として動作
         }
         self.brain = PoissonSNN(self.config, device=self.device)
         
         # 1. ニューロン定義
         self.brain.add_neuron_group("retina", 794, v_thresh=0.5)
         
-        # 閾値 5.0
+        # 基準閾値 5.0 (適応的に上昇する)
         self.brain.add_neuron_group("cortex", n_hidden, v_thresh=5.0)
         
         # 2. 接続構築
@@ -84,27 +132,28 @@ class DORAOnlineLearnerV16:
         n_input = retina_range[1] - retina_range[0]
         n_cortex = cortex_range[1] - cortex_range[0]
         
-        # 【修正3】画像入力の重みを強化 (0.01 -> 0.1)
-        # 計算: 15画素(接続) * 6スパイク(30ms/5) * 0.1(重み) = 9.0 (最大値)
-        # 平均的には 3.0 ~ 4.0 程度になり、閾値5.0には届かないが、ラベルがあれば超える
-        weights = np.random.uniform(0.08, 0.12, (n_cortex, n_input))
+        # 【修正1】画像入力の重みを主役に (0.15)
+        # 計算: 15画素 * 7.5スパイク * 0.15 = 16.8 >> 閾値5.0
+        # 画像だけで十分に発火できるが、適応的閾値により頻繁に発火すると閾値が20.0とかに上がるので、
+        # 最終的には「本当に一致度が高い」時しか発火しなくなる。
+        weights = np.random.uniform(0.12, 0.18, (n_cortex, n_input))
         
-        # 【修正4】ラベル入力 (3.0)
-        # ラベルからのスパイク(約6回) * 3.0 = 18.0 (圧倒的)
-        # ただしスパイクタイミングがばらつくので、瞬間的な電位寄与はもっと低い
-        # 実際には「ラベルがある＝発火確定」という強いバイアスになる
+        # 【修正2】ラベル入力は補助的に (1.5)
+        # ラベル(7.5スパイク) * 1.5 = 11.25
+        # 画像入力と同程度の強さを持つが、支配的すぎないように調整
         label_start_idx = 784
-        weights[:, label_start_idx:] = 3.0 
+        weights[:, label_start_idx:] = 1.5 
         
         # 接続密度 (10%)
         mask = (np.random.random(weights.shape) < 0.10).astype(float)
         weights *= mask
-        weights[:, label_start_idx:] = 3.0 
+        weights[:, label_start_idx:] = 1.5
         
         self.brain.kernel.connect_groups(retina_range, cortex_range, weights)
         
-        # 側抑制 (-2.0)
-        inhibition_weights = -2.0 * np.ones((n_cortex, n_cortex))
+        # 側抑制 (-3.0)
+        # 勝者総取りを促進
+        inhibition_weights = -3.0 * np.ones((n_cortex, n_cortex))
         np.fill_diagonal(inhibition_weights, 0)
         inhib_mask = (np.random.random(inhibition_weights.shape) < 0.20).astype(float)
         inhibition_weights *= inhib_mask
@@ -119,7 +168,7 @@ class DORAOnlineLearnerV16:
         self.os_kernel = NeuromorphicOS(self.brain, tick_rate=50)
         self.os_kernel.boot()
         
-        logger.info("🧠 Brain Initialized: Tuned Rate Coding (Im~0.1, Lb~3.0).")
+        logger.info("🧠 Brain Initialized: Adaptive Threshold Mode (Selective Tuning).")
 
     def overlay_label(self, image: torch.Tensor, label: int, use_correct: bool = True) -> torch.Tensor:
         flat_img = torch.clamp(image.view(-1), 0, 1)
@@ -149,8 +198,8 @@ class DORAOnlineLearnerV16:
         cortex_range = self.brain.group_indices["cortex"]
         retina_range = self.brain.group_indices["retina"]
         
-        lr = 0.05 
-        weight_decay = 0.0002
+        lr = 0.05
+        weight_decay = 0.0005
         
         input_vals = self._safe_numpy(input_spikes)
         pre_indices = np.where(input_vals > 0)[0]
@@ -169,7 +218,8 @@ class DORAOnlineLearnerV16:
             if pre_id >= len(self.brain.kernel.neurons): continue
             
             neuron = self.brain.kernel.neurons[pre_id]
-            rate_factor = min(2.0, input_vals[pre_idx_rel] / 5.0)
+            # 入力頻度スケーリング
+            rate_factor = min(1.5, input_vals[pre_idx_rel] / 4.0)
             
             for synapse in neuron.outgoing_synapses:
                 if cortex_range[0] <= synapse.target_id < cortex_range[1]:
@@ -181,15 +231,15 @@ class DORAOnlineLearnerV16:
                         
                         diff = val_p - val_n
                         
-                        # Negativeペナルティ (間違いを減らす)
+                        # Negativeで強く発火してしまった場合は強く罰する
                         if diff < 0:
-                            diff *= 2.0 
+                            diff *= 3.0
                             
                         dw = lr * diff * rate_factor
                         
                         synapse.weight += dw
-                        synapse.weight *= 0.998 # 減衰
-                        synapse.weight = max(0.001, min(1.0, synapse.weight)) # 上限1.0
+                        synapse.weight *= (1.0 - weight_decay)
+                        synapse.weight = max(0.001, min(2.0, synapse.weight))
                         updated_count += 1
         return updated_count
 
@@ -211,7 +261,7 @@ class DORAOnlineLearnerV16:
                 pred = l
         return pred, scores
 
-    def train(self, dataloader, epochs=1):
+    def train(self, dataloader, epochs=3): # エポック数を増やして適応を促す
         self.brain.train()
         
         for epoch in range(epochs):
@@ -226,7 +276,7 @@ class DORAOnlineLearnerV16:
                 
                 # --- Positive Phase ---
                 in_pos = self.overlay_label(img, lbl, True)
-                self.brain.reset_state()
+                self.brain.reset_state() # 状態リセットするが、閾値(v_thresh_adaptive)はクラス内で保持される
                 res_pos = self.brain.forward_step({"retina": in_pos}, learning=True, duration=30.0)
                 spikes_pos = res_pos["spikes"]["cortex"]
                 input_spikes = res_pos["spikes"]["retina"]
@@ -243,7 +293,7 @@ class DORAOnlineLearnerV16:
                 pos_g = self.get_goodness(spikes_pos)
                 neg_g = self.get_goodness(spikes_neg)
                 
-                if pos_g > neg_g and pos_g > 0:
+                if pos_g > neg_g:
                     correct_train += 1
                 
                 total_samples += 1
@@ -267,7 +317,9 @@ class DORAOnlineLearnerV16:
             
             pred, scores = self.predict(img)
             
-            if max(scores) == 0:
+            # スコアのばらつきが小さい＝自信がない場合は不正解扱い
+            score_range = max(scores) - min(scores)
+            if score_range < 5.0:
                 pred = -1
             
             if pred == lbl: correct += 1
@@ -285,17 +337,17 @@ def main():
     ])
     dataset = datasets.MNIST('./workspace/data', train=True, download=True, transform=transform)
     
-    # 500枚
-    train_subset = torch.utils.data.Subset(dataset, range(500))
+    # 1000枚のデータを3エポック回す
+    train_subset = torch.utils.data.Subset(dataset, range(1000))
     train_loader = torch.utils.data.DataLoader(train_subset, batch_size=1, shuffle=True)
     
-    test_subset = torch.utils.data.Subset(dataset, range(500, 550))
+    test_subset = torch.utils.data.Subset(dataset, range(1000, 1050))
     test_loader = torch.utils.data.DataLoader(test_subset, batch_size=1, shuffle=False)
     
-    learner = DORAOnlineLearnerV16(n_hidden=1000)
+    learner = DORAOnlineLearnerV17(n_hidden=1000)
     
-    logger.info("🚀 Starting DORA Online Learning (v16.0 Tuned Poisson)")
-    learner.train(train_loader, epochs=1)
+    logger.info("🚀 Starting DORA Online Learning (v17.0 Adaptive Thresholds)")
+    learner.train(train_loader, epochs=3)
     learner.evaluate(test_loader, limit=50)
 
 if __name__ == "__main__":
