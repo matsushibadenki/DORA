@@ -1,6 +1,6 @@
 # scripts/training/run_dora_online_learning_v6.py
-# Title: DORA Online Learner v6 (Homeostatic Stability)
-# Description: 「死（活動停止）」を防ぐ恒常性維持機能と、トレースベースの学習則を導入。
+# Japanese Title: DORA オンライン学習 v10.0 (強結合・高反応版)
+# Description: スパイクの「数」ではなく結合の「強さ」で発火を保証するよう修正。入力特徴に対する感度を大幅に高めたバージョン。
 
 import sys
 import os
@@ -17,21 +17,27 @@ from snn_research.core.neuromorphic_os import NeuromorphicOS
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("DORA_Learner_v6")
+logger = logging.getLogger("DORA_Learner_v10_HighGain")
 
-class DORAOnlineLearnerV6:
+class DORAOnlineLearnerV10:
     def __init__(self, n_hidden=1000, device='cpu'):
         self.device = torch.device(device)
         self.n_hidden = n_hidden
         
-        # 時間窓を確保
-        self.config = {"dt": 5.0}
+        # タイムステップ設定
+        # 標準的なSNNパラメータに戻す
+        self.config = {
+            "dt": 1.0, 
+            "t_ref": 5.0,
+            "tau_m": 20.0,
+        }
         self.brain = SpikingNeuralSubstrate(self.config, device=self.device)
         
         # 1. ニューロン定義
         self.brain.add_neuron_group("retina", 794, v_thresh=0.5)
-        # 閾値を標準的に設定
-        self.brain.add_neuron_group("cortex", n_hidden, v_thresh=1.5)
+        
+        # 閾値 1.0
+        self.brain.add_neuron_group("cortex", n_hidden, v_thresh=1.0)
         
         # 2. 接続構築
         logger.info(f"🔗 Building connections (Hidden={n_hidden})...")
@@ -41,120 +47,121 @@ class DORAOnlineLearnerV6:
         n_input = retina_range[1] - retina_range[0]
         n_cortex = cortex_range[1] - cortex_range[0]
         
-        # 重み初期化: ガウス分布で少し強めに
-        # 死を防ぐため、初期値は 0.05 中心
-        weights = np.random.normal(0.05, 0.02, (n_cortex, n_input))
-        weights = np.abs(weights)
+        # 【修正1】重みの強化
+        # MNISTの有効画素数が150、密度10%なら、1ニューロンあたりの入力は約15個。
+        # 15個 × 0.08 = 1.2 > 閾値1.0
+        # これにより、画像入力だけで確実に発火する
+        weights = np.random.uniform(0.05, 0.10, (n_cortex, n_input))
         
-        # ラベルブースト (控えめに x3.0)
+        # ラベル部分: さらに強く (1発で発火に寄与)
         label_start_idx = 784
-        weights[:, label_start_idx:] *= 3.0 
+        weights[:, label_start_idx:] = 2.0 
         
-        # スパース化 (密度20% - 効率化と過学習防止)
-        mask = (np.random.random(weights.shape) < 0.2).astype(float)
+        # 接続密度 (10%)
+        mask = (np.random.random(weights.shape) < 0.10).astype(float)
         weights *= mask
+        # ラベルは全結合
+        weights[:, label_start_idx:] = 2.0
         
         self.brain.kernel.connect_groups(retina_range, cortex_range, weights)
+        
+        # 【修正2】側抑制 (-1.0)
+        # 発火が強まるので、抑制も確実に効かせる
+        inhibition_weights = -1.0 * np.ones((n_cortex, n_cortex))
+        np.fill_diagonal(inhibition_weights, 0)
+        
+        # 抑制密度 (30%)
+        inhib_mask = (np.random.random(inhibition_weights.shape) < 0.30).astype(float)
+        inhibition_weights *= inhib_mask
+        
+        self.brain.kernel.connect_groups(cortex_range, cortex_range, inhibition_weights)
+        
         self.brain._projections_registry["optic_nerve"] = {"source": "retina", "target": "cortex"}
+        self.brain._projections_registry["lateral_inhibition"] = {"source": "cortex", "target": "cortex"}
         
         # 3. OS起動
         self.os_kernel = NeuromorphicOS(self.brain, tick_rate=50)
         self.os_kernel.boot()
         
-        # 学習用バッファ（トレース用）
-        self.input_trace = torch.zeros(n_input, device=self.device)
-        self.cortex_trace = torch.zeros(n_cortex, device=self.device)
-        
-        logger.info("🧠 Brain Initialized with Homeostasis Protection.")
+        logger.info("🧠 Brain Initialized: High Gain & Sparse Mode (W~0.08).")
 
-    def overlay_label(self, image: torch.Tensor, label: int, use_correct: bool = True, specific_neg_label: int = -1) -> torch.Tensor:
-        flat_img = image.view(-1)
-        if use_correct:
-            target = label
-        elif specific_neg_label != -1:
-            target = specific_neg_label
-        else:
-            target = (label + np.random.randint(1, 9)) % 10
+    def overlay_label(self, image: torch.Tensor, label: int, use_correct: bool = True) -> torch.Tensor:
+        """入力の二値化のみ行う（値のブーストはしない）"""
+        flat_img = (image.view(-1) > 0.3).float()
+        
+        if not use_correct:
+            label_candidates = list(range(10))
+            if label in label_candidates:
+                label_candidates.remove(label)
+            label = np.random.choice(label_candidates)
             
         label_vec = torch.zeros(10)
-        label_vec[target] = 1.0
+        label_vec[label] = 1.0 
         return torch.cat([flat_img, label_vec])
 
     def get_goodness(self, spikes):
-        return spikes.pow(2).sum().item()
+        return spikes.sum().item()
 
-    def update_traces(self, input_spikes, output_spikes, decay=0.8):
-        """スパイクの履歴（トレース）を更新"""
-        self.input_trace = self.input_trace * decay + input_spikes.flatten()
-        self.cortex_trace = self.cortex_trace * decay + output_spikes.flatten()
+    def _safe_numpy(self, tensor_spikes):
+        vals = tensor_spikes.detach().cpu().numpy().flatten()
+        if vals.size != self.n_hidden:
+            safe_vals = np.zeros(self.n_hidden, dtype=np.float32)
+            if vals.size > 0:
+                limit = min(vals.size, self.n_hidden)
+                safe_vals[:limit] = vals[:limit]
+            return safe_vals
+        return vals
 
-    def run_plasticity(self, pos_cortex_trace, neg_cortex_trace, input_active_mask):
-        """
-        トレースベースのForward-Forward学習則
-        """
+    def run_plasticity(self, pos_spikes, neg_spikes, input_spikes):
+        """学習則"""
         cortex_range = self.brain.group_indices["cortex"]
         retina_range = self.brain.group_indices["retina"]
         
-        # 学習率
-        lr = 0.01 
+        lr = 0.05 
+        weight_decay = 0.001 
         
-        # 入力がアクティブだったシナプスのみ更新 (効率化)
-        # input_active_mask: 今回の試行で活動があった入力インデックス
-        pre_indices = torch.nonzero(input_active_mask.flatten()).flatten().cpu().numpy()
+        pre_indices = torch.nonzero(input_spikes.flatten() > 0).flatten().cpu().numpy()
+        pos_vals = self._safe_numpy(pos_spikes)
+        neg_vals = self._safe_numpy(neg_spikes)
+        
         updated_count = 0
+        active_post_indices = np.where((pos_vals > 0) | (neg_vals > 0))[0]
         
-        pos_vals = pos_cortex_trace.cpu().numpy()
-        neg_vals = neg_cortex_trace.cpu().numpy()
-        
+        if len(active_post_indices) == 0:
+            return 0
+
         for pre_idx_rel in pre_indices:
             pre_id = retina_range[0] + pre_idx_rel
+            if pre_id >= len(self.brain.kernel.neurons): continue
+            
             neuron = self.brain.kernel.neurons[pre_id]
             
             for synapse in neuron.outgoing_synapses:
                 if cortex_range[0] <= synapse.target_id < cortex_range[1]:
                     post_idx = synapse.target_id - cortex_range[0]
                     
-                    y_pos = pos_vals[post_idx]
-                    y_neg = neg_vals[post_idx]
-                    
-                    # Positive活動が高く、Negative活動が低いほど強化
-                    # 以前よりマイルドな更新則: dw = lr * (Pos - Neg)
-                    dw = lr * (y_pos - y_neg)
-                    
-                    synapse.weight += dw
-                    # 重みクリッピング (下限を0.0ではなく極小値にして完全死を防ぐ)
-                    synapse.weight = max(0.001, min(1.5, synapse.weight))
-                    updated_count += 1
-                    
+                    if post_idx in active_post_indices:
+                        val_p = pos_vals[post_idx]
+                        val_n = neg_vals[post_idx]
+                        
+                        dw = lr * (val_p - val_n)
+                        
+                        synapse.weight += dw
+                        synapse.weight -= weight_decay * synapse.weight
+                        
+                        # 重み制限: 2.0まで許容
+                        synapse.weight = max(0.001, min(2.0, synapse.weight))
+                        updated_count += 1
+                        
         return updated_count
-
-    def apply_homeostasis(self, mean_activity):
-        """
-        生命維持装置: 活動が低すぎる場合、シナプス感度を全体的に上げる
-        """
-        target_activity = 5.0 # 目標とするGoodness値
-        
-        if mean_activity < 1.0: # 危険水域
-            boost_factor = 1.05 # 5%ブースト
-            # 全シナプスをスキャンするのは重いが、緊急時のみ実行
-            # ここでは簡易的に「次の入力」に対する感度を上げるハックとして、閾値を一時的に下げる手もあるが、
-            # 今回はDORAの仕様上、シナプス操作はコストが高いので、ログを出して警告するに留める設計もアリ。
-            # しかし、今回は学習させることが目的なので、入力層の重みをハックする。
-            pass 
 
     def predict(self, img):
         best_g = -1
         pred = -1
         scores = []
         
-        # 推論時は脳の状態をリセット
-        self.brain.reset_state()
-        
         for l in range(10):
-            # ラベルごとに確認
             in_data = self.overlay_label(img, l, True)
-            
-            # 状態を完全リセットせずに連続提示するとコンテキストが混ざるため、リセット推奨
             self.brain.reset_state()
             
             res = self.os_kernel.run_cycle({"retina": in_data})
@@ -170,8 +177,6 @@ class DORAOnlineLearnerV6:
         self.brain.train()
         
         for epoch in range(epochs):
-            total_pos_g = 0
-            total_neg_g = 0
             correct_train = 0
             total_samples = 0
             
@@ -181,59 +186,41 @@ class DORAOnlineLearnerV6:
                 img = img[0]
                 lbl = label[0].item()
                 
-                # --- Wake Phase (Positive) ---
+                # --- Positive Phase ---
                 in_pos = self.overlay_label(img, lbl, True)
-                self.brain.reset_state() # 毎回リセットしてフレッシュな反応を見る
+                self.brain.reset_state()
                 res_pos = self.os_kernel.run_cycle({"retina": in_pos}, phase="wake")
                 spikes_pos = res_pos["spikes"]["cortex"]
                 input_spikes = res_pos["spikes"]["retina"]
                 
-                # トレース更新 (Positive)
-                self.cortex_trace = spikes_pos.flatten() # 今回は瞬時値を採用（簡易化）
-                pos_trace_snapshot = self.cortex_trace.clone()
-
-                # --- Dream Phase (Negative) ---
-                # ランダムな間違いを提示
-                in_neg = self.overlay_label(img, lbl, use_correct=False)
+                # --- Negative Phase ---
+                in_neg = self.overlay_label(img, lbl, False)
                 self.brain.reset_state()
                 res_neg = self.os_kernel.run_cycle({"retina": in_neg}, phase="dream")
                 spikes_neg = res_neg["spikes"]["cortex"]
-                
-                # トレース更新 (Negative)
-                neg_trace_snapshot = spikes_neg.flatten()
 
-                # --- Prediction Check (for stats) ---
+                # --- Learning ---
+                self.run_plasticity(spikes_pos, spikes_neg, input_spikes)
+                
                 pos_g = self.get_goodness(spikes_pos)
                 neg_g = self.get_goodness(spikes_neg)
                 
-                if pos_g > neg_g:
+                if pos_g > neg_g and pos_g > 0:
                     correct_train += 1
                 
-                # --- Plasticity ---
-                # Positiveで発火した、あるいはNegativeで発火した入力に対して重み更新
-                active_inputs = (input_spikes > 0)
-                n_upd = self.run_plasticity(pos_trace_snapshot, neg_trace_snapshot, active_inputs)
-                
-                # --- Homeostasis check ---
-                # もしPositiveな反応がゼロなら、これは「無知」なので、少し学習率を上げて強制発火させるなどの処理が必要だが
-                # 今回は重みの下限(0.001)で死を防いでいる
-                
-                total_pos_g += pos_g
-                total_neg_g += neg_g
                 total_samples += 1
                 
-                pbar.set_postfix({
-                    "Pos": f"{pos_g:.1f}", 
-                    "Neg": f"{neg_g:.1f}", 
-                    "TrainAcc": f"{100*correct_train/total_samples:.1f}%"
-                })
-            
-            logger.info(f"Epoch {epoch+1} Stats: Mean Pos={total_pos_g/total_samples:.1f}, Mean Neg={total_neg_g/total_samples:.1f}")
+                if total_samples % 10 == 0:
+                    pbar.set_postfix({
+                        "Pos": f"{pos_g:.0f}", 
+                        "Neg": f"{neg_g:.0f}", 
+                        "Acc": f"{100*correct_train/total_samples:.1f}%"
+                    })
 
-    def evaluate(self, dataloader, limit=20):
+    def evaluate(self, dataloader, limit=50):
         correct = 0
         total = 0
-        logger.info("🔍 Evaluating...")
+        logger.info(f"🔍 Evaluating top {limit} samples...")
         
         for i, (img, label) in enumerate(dataloader):
             if i >= limit: break
@@ -242,37 +229,35 @@ class DORAOnlineLearnerV6:
             
             pred, scores = self.predict(img)
             
+            if max(scores) == 0:
+                pred = -1
+            
             if pred == lbl: correct += 1
             total += 1
             
             if i < 5:
-                # Top score details
-                score_str = ", ".join([f"{s:.1f}" for s in scores])
-                print(f"Img {i} (True={lbl}): Pred={pred} | Scores: [{score_str}]")
+                print(f"Sample {i}: True={lbl}, Pred={pred}, Scores={np.round(scores, 1)}")
                 
-        logger.info(f"Test Accuracy: {100*correct/total:.2f}% ({correct}/{total})")
+        accuracy = 100 * correct / total
+        logger.info(f"✅ Final Test Accuracy: {accuracy:.2f}%")
 
 def main():
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
     ])
     dataset = datasets.MNIST('./workspace/data', train=True, download=True, transform=transform)
     
-    # データセット: 2000枚
+    # 2000枚
     train_subset = torch.utils.data.Subset(dataset, range(2000))
     train_loader = torch.utils.data.DataLoader(train_subset, batch_size=1, shuffle=True)
     
     test_subset = torch.utils.data.Subset(dataset, range(2000, 2050))
     test_loader = torch.utils.data.DataLoader(test_subset, batch_size=1, shuffle=False)
     
-    # 隠れ層を1000に増強
-    learner = DORAOnlineLearnerV6(n_hidden=1000)
+    learner = DORAOnlineLearnerV10(n_hidden=1000)
     
-    # 1 Epochで十分な傾向が見えるはず
-    logger.info("🚀 Starting DORA Online Learning v6 (Stable Mode)")
+    logger.info("🚀 Starting DORA Online Learning (v10.0 High Gain)")
     learner.train(train_loader, epochs=1)
-    
     learner.evaluate(test_loader, limit=50)
 
 if __name__ == "__main__":

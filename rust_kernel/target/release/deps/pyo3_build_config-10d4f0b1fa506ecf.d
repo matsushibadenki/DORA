@@ -1,0 +1,14 @@
+/Users/Shared/Program/python310/DORA/rust_kernel/target/release/deps/pyo3_build_config-10d4f0b1fa506ecf.d: /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/lib.rs /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/errors.rs /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/impl_.rs /Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config-file.txt /Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config.txt
+
+/Users/Shared/Program/python310/DORA/rust_kernel/target/release/deps/libpyo3_build_config-10d4f0b1fa506ecf.rlib: /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/lib.rs /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/errors.rs /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/impl_.rs /Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config-file.txt /Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config.txt
+
+/Users/Shared/Program/python310/DORA/rust_kernel/target/release/deps/libpyo3_build_config-10d4f0b1fa506ecf.rmeta: /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/lib.rs /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/errors.rs /Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/impl_.rs /Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config-file.txt /Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config.txt
+
+/Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/lib.rs:
+/Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/errors.rs:
+/Users/littlebuddha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.20.3/src/impl_.rs:
+/Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config-file.txt:
+/Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.20.3
+# env-dep:OUT_DIR=/Users/Shared/Program/python310/DORA/rust_kernel/target/release/build/pyo3-build-config-25fcee43be6a0b21/out

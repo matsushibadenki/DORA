@@ -1,65 +1,105 @@
-# scripts/demos/systems/run_neuro_symbolic_demo.py
+# directory: scripts/demos/systems
+# file: run_neuro_symbolic_demo.py
+# purpose: Neuro-Symbolic連携デモ (Fix: Double Normalization Bug)
+
+import torch
+from torchvision import datasets, transforms
 import sys
 import os
-import logging
-import torch
+import random
 import numpy as np
 
-# プロジェクトルートをパスに追加
+# パス設定
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 
 try:
+    from snn_research.models.adapters.sara_adapter import SARAAdapter
     from snn_research.cognitive_architecture.neuro_symbolic_bridge import NeuroSymbolicBridge
-except ImportError as e:
-    print(f"❌ Import Error: {e}")
+except ImportError:
+    print("Error: Required modules not found. Please ensure project structure is correct.")
     sys.exit(1)
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', force=True)
-logger = logging.getLogger("NeuroSymbolicDemo")
+def add_noise(img, noise_level=0.3):
+    """
+    画像にノイズを加える
+    img: [0, 1] のTensor
+    """
+    noise = torch.randn_like(img) * noise_level
+    # Clampして [0, 1] の範囲に収める (Adapterが後で正規化するため)
+    return (img + noise).clamp(0, 1)
 
 def run_demo():
-    logger.info("🌉 Initializing Neuro-Symbolic Bridge Demo...")
+    print("=== DORA Neuro-Symbolic Integration Demo (Fixed) ===")
     
-    concepts = ["Apple", "Fire truck", "Sun", "Rose"]
+    model_path = "sara_mnist_v5.pth"
+    if not os.path.exists(model_path):
+        print(f"Model {model_path} not found. Please run training first.")
+        return
+
+    # エージェント初期化
+    sara = SARAAdapter(model_path, device="cpu")
     
-    # 1. コンポーネントの準備 (引数名を修正)
-    bridge = NeuroSymbolicBridge(
-        input_dim=128,   # snn_output_dim -> input_dim
-        embed_dim=512,   # symbol_dim -> embed_dim
-        concepts=concepts
-    )
-    # device引数は__init__にないので、後からto()で指定
-    device = torch.device("cpu")
-    bridge.to(device)
+    # ブリッジ初期化
+    bridge = NeuroSymbolicBridge(sara, confidence_threshold=0.85)
     
-    # 2. SNNからの信号シミュレーション (直感的な出力)
-    # 例: 何か「赤い丸いもの」を見たときのスパイク発火パターン (Batch, Dim)
-    snn_signal = torch.rand(1, 128).to(device)
-    logger.info(f"🧠 SNN Signal (Intuition) Received. Shape: {snn_signal.shape}")
+    # データセット (正規化なしのRaw Tensorとしてロード)
+    dataset = datasets.MNIST('../data', train=False, download=True, 
+                           transform=transforms.ToTensor())
     
-    # 3. シンボリック推論への変換 (Grounding/Extraction)
-    # bridge.ground() は存在しないため、extract_symbols() を使用
-    logger.info("🔄 Extracting Symbols from SNN signal...")
-    detected_symbols = bridge.extract_symbols(snn_signal, threshold=0.3)
+    print("Starting interaction loop...")
+    print("-" * 60)
     
-    if detected_symbols:
-        logger.info(f"💡 Detected Concepts: {[s.name for s in detected_symbols]}")
-    else:
-        logger.info("💡 No clear concept detected (Simulating ambiguity).")
+    indices = list(range(len(dataset)))
+    random.shuffle(indices)
     
-    # 4. 逆方向: シンボルからSNN信号への変換 (Modulation/Injection)
-    # bridge.modulate() は存在しないため、symbol_to_spike() を使用
-    target_concept = "Apple"
-    logger.info(f"↩️ Injecting Top-down Attention for '{target_concept}'...")
-    
-    # 文字列からテンソルへ変換
-    feedback_signal = bridge.symbol_to_spike(target_concept, batch_size=1)
-    
-    logger.info(f"✅ Feedback Signal Generated: {feedback_signal.shape}")
-    logger.info("   (This signal acts as an attractor bias for the SNN)")
-    
-    logger.info("🎉 Neuro-Symbolic Cycle Complete.")
+    for step in range(1, 11):
+        idx = indices[step]
+        img_clean, label = dataset[idx] # [0, 1] Tensor
+        
+        # 難問生成（ノイズ付加）
+        is_hard = (step % 3 == 0)
+        if is_hard:
+            # SARAを迷わせるレベルのノイズ
+            img_input = add_noise(img_clean, noise_level=0.8)
+            difficulty = "HARD (Noisy)"
+        else:
+            img_input = img_clean
+            difficulty = "EASY"
+            
+        print(f"\nStep {step}: Input [{label}] - Difficulty: {difficulty}")
+        
+        # ブリッジ処理
+        result = bridge.process_input(img_input, correct_label=label)
+        
+        # 結果表示
+        source = result["source"]
+        pred = result["prediction"]
+        conf = result["confidence"]
+        latency = result["latency"]
+        note = result.get("explanation", "")
+        
+        status = "✅" if pred == label else "❌"
+        
+        print(f"  -> Processed by: {source}")
+        print(f"  -> Result: {pred} {status} (Conf: {conf:.1%})")
+        print(f"  -> Latency: {latency:.1f}ms | Note: {note}")
+        
+        # 学習後の確認
+        if "System 2" in source and "learning_loss" in result:
+            print(f"  [Verification] Re-evaluating with System 1...")
+            retry = bridge.process_input(img_input) # Teacherなし
+            
+            r_pred = retry["prediction"]
+            r_conf = retry["confidence"]
+            r_src = retry["source"]
+            
+            # System 1が自信を持って正解できれば成功
+            if r_pred == label and r_src.startswith("System 1") and r_conf > 0.8:
+                print(f"  ✨ SUCCESS: System 1 learned to handle this noise pattern! (Conf: {r_conf:.1%})")
+            else:
+                print(f"  ⚠️  PARTIAL: Adaptation incomplete. (Pred: {r_pred}, Conf: {r_conf:.1%})")
+            
+    bridge.print_stats()
 
 if __name__ == "__main__":
     run_demo()

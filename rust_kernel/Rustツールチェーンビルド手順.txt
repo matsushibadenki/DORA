@@ -1,0 +1,17 @@
+# 1. Rustツールチェーンのインストール (もし入っていなければ)
+# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# source "$HOME/.cargo/env"
+
+# 2. Maturin (ビルドツール) のインストール
+pip install maturin
+
+# 3. Rustカーネルのディレクトリ作成とファイル配置
+mkdir -p rust_kernel/src
+# (上で提示した Cargo.toml を rust_kernel/Cargo.toml に保存)
+# (上で提示した lib.rs を rust_kernel/src/lib.rs に保存)
+
+# 4. ビルドとインストール (現在のPython環境にインストールされます)
+cd rust_kernel
+maturin develop --release
+python -c "import dora_kernel; print('Success! Kernel loaded.')"
+cd ..
