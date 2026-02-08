@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Union, List
 from sentence_transformers import SentenceTransformer, util
 
 class Hippocampus:
-    def __init__(self, brain=None, storage_file="dora_memory_bank.json", capacity=200, input_dim=128, device='cpu'):
+    def __init__(self, brain=None, storage_file="data/dora_memory_bank.json", capacity=200, input_dim=128, device='cpu'):
         self.logger = logging.getLogger("Hippocampus")
         self.storage_path = Path(storage_file)
         self.brain = brain
