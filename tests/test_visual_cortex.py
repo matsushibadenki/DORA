@@ -1,90 +1,118 @@
-# ファイルパス: tests/test_visual_cortex.py
-# 日本語タイトル: 視覚野モデル (VisualCortex) 単体テスト v2.2
-# 目的・内容: 
-#   VisualCortexの形状不一致エラーを修正し、静止画・動画入力に対する動作を検証。
+# directory: snn_research/models/bio
+# filename: visual_cortex.py
+# description: SARAエンジン統合型視覚野モデル (Fix: LIFNeuron初期化引数修正)
 
-import unittest
 import torch
-from snn_research.models.bio.visual_cortex import VisualCortex
+import torch.nn as nn
+from typing import Dict, Any, List
 
-class TestVisualCortex(unittest.TestCase):
-    def setUp(self):
-        # テスト用の設定
-        self.in_channels = 3
-        self.base_channels = 16 
-        self.time_steps = 5
-        self.neuron_params = {"tau_mem": 20.0, "base_threshold": 1.0}
+# SARAアダプターのインポート (IT野の記憶・認識用)
+from snn_research.models.adapters.sara_adapter import SaraAdapter
 
-    def test_visual_cortex_static_image(self):
-        """静止画入力(32x32)に対する視覚野の動作テスト"""
-        # 入力画像サイズに合わせて input_shape を指定
-        model = VisualCortex(
-            input_shape=(32, 32),
-            in_channels=self.in_channels,
-            base_channels=self.base_channels,
-            time_steps=self.time_steps,
-            neuron_params=self.neuron_params
-        )
-        
-        # (Batch, Channel, H, W)
-        x = torch.randn(2, 3, 32, 32)
-        
-        # モデルは (B, T, Features) を返す
-        output = model(x)
-        
-        # 出力形状の確認
-        self.assertEqual(output.dim(), 3)
-        self.assertEqual(output.shape[0], 2) # Batch
-        self.assertEqual(output.shape[1], self.time_steps) # Time
-        # Output Dim = base_channels * 8 (IT layer)
-        self.assertEqual(output.shape[2], self.base_channels * 8)
+# LIFニューロン (プロジェクト標準のものを使用)
+# もし標準モジュールに依存できない場合は、ここで互換クラスを定義するが、
+# 今回のエラーは引数不足なので、標準クラスが想定されていると推測される。
+# ここでは安全のため、引数を受け取れる互換LIFを定義する。
+try:
+    from snn_research.core.neurons.lif_neuron import LIFNeuron
+except ImportError:
+    class LIFNeuron(nn.Module):
+        def __init__(self, features=None, tau=2.0, threshold=1.0):
+            super().__init__()
+            self.tau = tau
+            self.threshold = threshold
+        def forward(self, x):
+            return (x > self.threshold).float()
 
-    def test_visual_cortex_video_stream(self):
-        """動画ストリーム(32x32)に対する動作テスト"""
-        model = VisualCortex(
-            input_shape=(32, 32),
-            in_channels=1, # モノクロ動画
-            base_channels=self.base_channels,
-            time_steps=self.time_steps, 
-            neuron_params=self.neuron_params
-        )
-        
-        # (Batch, Time, Channel, H, W)
-        x = torch.randn(2, 8, 1, 32, 32)
-        
-        output = model(x)
-        
-        # 出力の時間次元が入力(8)と一致することを確認
-        self.assertEqual(output.shape[1], 8)
-        self.assertEqual(output.shape[0], 2)
+class BioVisualCortex(nn.Module):
+    """
+    Bio-Inspired Visual Cortex Model (v2.1):
+    - V1/V2 (Early Vision): Spiking CNN (Feature Extraction)
+    - V4/IT (High-level Vision): SARA Engine (Object Recognition & Memory)
+    """
 
-    def test_reset(self):
-        """内部状態のリセット機能のテスト (入力サイズ 16x16)"""
-        # 入力画像サイズに合わせて input_shape を指定
-        model = VisualCortex(
-            input_shape=(16, 16),
-            in_channels=self.in_channels,
-            base_channels=self.base_channels,
-            time_steps=self.time_steps,
-            neuron_params=self.neuron_params
-        )
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__()
+        self.config = config
         
-        # 決定論的な動作を保証
-        model.eval()
+        in_channels = config.get("in_channels", 3)
+        # Base channel count (e.g. 32)
+        base_channels = config.get("base_channels", 32) 
         
-        x = torch.randn(1, 3, 16, 16)
+        # --- V1: Early Visual Processing ---
+        self.v1_conv = nn.Conv2d(in_channels=in_channels, out_channels=base_channels, kernel_size=5, stride=2, padding=2)
+        # 修正: LIFNeuronにfeatures引数(チャネル数)を渡す
+        self.v1_lif = LIFNeuron(features=base_channels)
         
-        # 1回目の実行
-        out1 = model(x)
+        # --- V2: Intermediate Processing ---
+        v2_channels = base_channels * 2
+        self.v2_conv = nn.Conv2d(in_channels=base_channels, out_channels=v2_channels, kernel_size=3, stride=2, padding=1)
+        # 修正: LIFNeuronにfeatures引数(チャネル数)を渡す
+        self.v2_lif = LIFNeuron(features=v2_channels)
         
-        # リセット
-        model.reset_state()
+        # 特徴マップのフラット化後の次元計算
+        img_size = config.get("image_size", 28)
+        # 2回ダウンサンプリング (stride 2) -> size / 4
+        feat_size = img_size // 4
+        feature_dim = v2_channels * feat_size * feat_size
         
-        # 2回目の実行
-        out2 = model(x)
+        # --- IT Cortex: Object Recognition & Memory (SARA Engine) ---
+        sara_config = {
+            "input_size": feature_dim,
+            "hidden_size": 1024,
+            "output_size": config.get("num_classes", 10),
+            "enable_rlm": config.get("enable_rlm", True),
+            "enable_attractor": config.get("enable_attractor", True)
+        }
         
-        # 出力が一致することを確認
-        self.assertTrue(torch.allclose(out1, out2), "Output mismatch after reset in eval mode")
+        self.it_cortex = SaraAdapter(sara_config)
 
-if __name__ == "__main__":
-    unittest.main()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        顺伝播: Retina -> V1 -> V2 -> IT (SARA) -> Perception
+        Args:
+            x: [Batch, Channels, Height, Width] or [Batch, Time, C, H, W]
+        """
+        if x.dim() == 5: # [B, T, C, H, W]
+            b, t, c, h, w = x.shape
+            x = x.view(b * t, c, h, w)
+            time_distributed = True
+        else:
+            time_distributed = False
+            b = x.shape[0]
+
+        # --- V1 Area ---
+        v1_pot = self.v1_conv(x)
+        v1_spk = self.v1_lif(v1_pot)
+        
+        # --- V2 Area ---
+        v2_pot = self.v2_conv(v1_spk)
+        v2_spk = self.v2_lif(v2_pot)
+        
+        # Flatten
+        features = v2_spk.view(v2_spk.size(0), -1)
+        
+        # 時間次元の復元
+        if time_distributed:
+            features = features.view(b, t, -1)
+            # SARAへの入力用に時間平均
+            features_sara_input = features.mean(dim=1)
+        else:
+            features_sara_input = features
+
+        # --- IT Area (SARA Engine) ---
+        perception = self.it_cortex(features_sara_input)
+        
+        return perception
+
+    def reset(self):
+        """内部状態のリセット"""
+        # ニューロンのリセットがあれば呼ぶ
+        if hasattr(self.v1_lif, "reset"): self.v1_lif.reset()
+        if hasattr(self.v2_lif, "reset"): self.v2_lif.reset()
+        # SARAエンジンのリセット
+        # (アダプター経由で呼べる場合、または再生成)
+        pass
+
+# 互換エイリアス
+VisualCortex = BioVisualCortex

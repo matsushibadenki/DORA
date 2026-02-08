@@ -4,7 +4,6 @@
 #   snn_research.models.bio パッケージへのエイリアスとして機能します。
 #   VisualCortex, SimpleRSNN (TemporalSNN) を公開。
 
-from snn_research.models.bio.lif_neuron_legacy import BioLIFNeuron
 from snn_research.models.bio.simple_network import BioSNN
 from snn_research.models.bio.visual_cortex import VisualCortex
 from snn_research.models.bio.temporal_snn import SimpleRSNN

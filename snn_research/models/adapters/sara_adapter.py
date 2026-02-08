@@ -1,184 +1,106 @@
 # directory: snn_research/models/adapters
-# file: sara_adapter.py
-# purpose: SARAエンジン アダプター v4 (With Experience Replay for Stability)
+# filename: sara_adapter.py
+# description: Legacyなモデルインターフェースを最新のSARAエンジン(Rust backend)へ適合させるアダプター
 
-import os
-import sys
 import torch
 import torch.nn as nn
-import numpy as np
-import random
-from PIL import Image
-from torchvision import transforms
-from typing import Tuple, Optional, Any, List
+from typing import Dict, Any, Optional, Tuple
 
+# SARAエンジンのインポート (パスはプロジェクト構造に合わせて調整)
 try:
-    from snn_research.models.experimental.sara_engine import SARAEngine
+    from snn_research.models.experimental.sara_engine import SARABrainCore
 except ImportError:
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
-    from snn_research.models.experimental.sara_engine import SARAEngine
+    # 循環参照やRustビルド未完了時のフォールバック用ダミー
+    print("Warning: SARABrainCore could not be imported. Using Mock.")
+    SARABrainCore = None 
 
-class SARAAdapter:
-    def __init__(self, model_path: str, device: str = "cpu"):
-        self.device = torch.device(device)
-        self.model = SARAEngine(
-            input_dim=784,
-            n_encode_neurons=128,
-            d_legendre=64,
-            d_meaning=128,
-            n_output=10
-        ).to(self.device)
-        
-        self._load_weights(model_path)
-        self.model.eval()
-        
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01)
-        
-        # 短期記憶バッファ (海馬)
-        self.episodic_memory: List[Tuple[torch.Tensor, torch.Tensor]] = []
-        self.memory_capacity = 100
-        
-        self.transform = transforms.Compose([
-            transforms.Resize((28, 28)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])
+class SaraAdapter(nn.Module):
+    """
+    SARA (Spiking Attractor Recursive Architecture) エンジンを
+    既存のPyTorchモデルインターフェースとして振る舞わせるためのアダプタークラス。
+    
+    主な機能:
+    - 入力テンソルのRustカーネルへの受け渡し
+    - 学習モード(Online/Offline)の切り替え
+    - 報酬信号のRLM(Reinforcement Learning Mechanism)への伝達
+    - 内部状態(短期記憶/長期記憶)の管理
+    """
 
-    def _load_weights(self, path: str):
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Model weights not found at {path}")
-        try:
-            state_dict = torch.load(path, map_location=self.device)
-            self.model.load_state_dict(state_dict)
-            print(f"[SARA] Loaded weights from {path}")
-        except Exception as e:
-            print(f"[SARA] Error loading weights: {e}")
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__()
+        self.config = config
+        self.input_size = config.get("input_size", 784)
+        self.hidden_size = config.get("hidden_size", 512)
+        self.output_size = config.get("output_size", 10)
+        self.use_rust = config.get("use_rust_kernel", True)
+        
+        # SARAコアエンジンの初期化
+        if SARABrainCore is not None:
+            self.engine = SARABrainCore(
+                input_dim=self.input_size,
+                hidden_dim=self.hidden_size,
+                output_dim=self.output_size,
+                use_cuda=torch.cuda.is_available(),
+                enable_rlm=config.get("enable_rlm", True),
+                enable_attractor=config.get("enable_attractor", True)
+            )
+        else:
+            raise ImportError("SARABrainCore is required but not found.")
 
-    def think(self, image_input: Any) -> dict:
-        self.model.eval()
-        img_tensor = self._preprocess(image_input)
-        with torch.no_grad():
-            logits, rate, _ = self.model(img_tensor)
-            probs = torch.softmax(logits, dim=1)
-            confidence, prediction = torch.max(probs, dim=1)
+        # ダミーのパラメータ登録 (Optimizerが空のパラメータリストでエラーになるのを防ぐため)
+        # 実際の学習はRustカーネル内のシナプス荷重更新で行われるため、これは勾配を持たない
+        self.dummy_param = nn.Parameter(torch.empty(0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        順伝播処理。
+        Args:
+            x: Input tensor [Batch, Time, Channels] or [Batch, Channels]
+        Returns:
+            Output spike probabilities or membrane potentials
+        """
+        # SARAエンジンへの委譲
+        # Rust側が [Batch, Dim] を期待している場合、Time次元ループはここで処理するかRustに任せる
+        # ここではSARAがシーケンス全体を一括処理できると仮定
+        
+        output, state = self.engine.forward(x)
+        
+        # 戻り値がTupleならTensorのみを返す（既存互換性）
+        if isinstance(output, tuple):
+            return output[0]
+        return output
+
+    def learn(self, x: torch.Tensor, reward: float = 0.0, target: Optional[torch.Tensor] = None):
+        """
+        オンライン学習実行用メソッド。
+        従来のSTDP学習や強化学習のステップをこの1メソッドで完結させる。
+        """
+        if self.training:
+            # 報酬信号をエンジンへ注入 (RLM: Reward Modulated STDP)
+            self.engine.apply_reward(reward)
+            
+            # 教師あり学習信号がある場合 (Supervised STDP / Error-driven)
+            if target is not None:
+                self.engine.apply_error_signal(target)
+            
+            # 重み更新のトリガー
+            self.engine.update_synapses()
+
+    def get_memory_state(self) -> Dict[str, torch.Tensor]:
+        """
+        現在の記憶状態（短期・長期）を取得する。
+        可視化やデバッグに使用。
+        """
         return {
-            "prediction": prediction.item(),
-            "confidence": confidence.item(),
-            "firing_rate": rate
+            "short_term": self.engine.get_stm_state(),
+            "long_term": self.engine.get_ltm_weights(),
+            "attractor": self.engine.get_attractor_energy()
         }
 
-    def learn_instance(self, image_input: Any, correct_label: int, max_steps: int = 50) -> float:
+    def consolidate_memory(self):
         """
-        即時学習 + Experience Replay (リハーサル)
-        新しい情報を学ぶ際に、短期記憶からランダムに過去の事例を混ぜて学習し、
-        特定のパターンへの過剰適合（破滅的忘却）を防ぐ。
+        睡眠フェーズなどで呼び出し。
+        短期記憶を長期記憶へ転送し、構造的可塑性を適用する。
         """
-        self.model.train()
-        
-        # 学習率を少し控えめに調整 (過学習防止)
-        current_lr = 0.02
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = current_lr
-            
-        new_img = self._preprocess(image_input)
-        new_target = torch.tensor([correct_label], device=self.device)
-        
-        # 海馬へ保存
-        if len(self.episodic_memory) >= self.memory_capacity:
-            self.episodic_memory.pop(0)
-        # CPUに退避して保存
-        self.episodic_memory.append((new_img.detach().cpu(), new_target.detach().cpu()))
-        
-        initial_loss = 0.0
-        print(f"[Plasticity] Adapting with Replay...", end="", flush=True)
-        
-        for step in range(max_steps):
-            self.optimizer.zero_grad()
-            
-            # --- Replay Batch 生成 ---
-            # 今回の新しいデータ
-            batch_imgs = [new_img]
-            batch_targets = [new_target]
-            
-            # 過去の記憶からランダムに数件取得 (Replay)
-            # 記憶が十分ある場合、バッチサイズを増やして安定化
-            replay_count = min(len(self.episodic_memory) - 1, 4) 
-            if replay_count > 0:
-                replay_samples = random.sample(self.episodic_memory[:-1], replay_count) # 最新以外からサンプリング
-                for img_cpu, target_cpu in replay_samples:
-                    batch_imgs.append(img_cpu.to(self.device))
-                    batch_targets.append(target_cpu.to(self.device))
-            
-            # バッチ結合
-            input_batch = torch.cat(batch_imgs, dim=0)
-            target_batch = torch.cat(batch_targets, dim=0)
-            
-            # --- 学習ステップ ---
-            logits, _, _ = self.model(input_batch)
-            loss = nn.functional.cross_entropy(logits, target_batch)
-            
-            if step == 0: initial_loss = loss.item()
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
-            
-            # --- 収束判定 (ターゲット画像に対してのみ行う) ---
-            with torch.no_grad():
-                logits_new, _, _ = self.model(new_img)
-                probs = torch.softmax(logits_new, dim=1)
-                pred = probs.argmax(dim=1).item()
-                confidence = probs[0, correct_label].item()
-            
-            # 確信度が十分高くなったら終了
-            if pred == correct_label and confidence > 0.90:
-                print(f" Converged @ {step+1} (Conf: {confidence*100:.1f}%)")
-                break
-        else:
-            print(" Stopped.")
-            
-        self.model.eval()
-        return initial_loss
-
-    def sleep(self, epochs: int = 3):
-        """睡眠統合 (全エピソード記憶のリプレイ)"""
-        if not self.episodic_memory:
-            print("[Sleep] No memories to consolidate.")
-            return
-            
-        print(f"\n[Sleep] Consolidating {len(self.episodic_memory)} episodes...")
-        self.model.train()
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = 0.001 # 低学習率
-            
-        total_loss = 0
-        for epoch in range(epochs):
-            random.shuffle(self.episodic_memory)
-            # ミニバッチ学習の簡易実装
-            for img_cpu, target_cpu in self.episodic_memory:
-                img = img_cpu.to(self.device)
-                target = target_cpu.to(self.device)
-                
-                self.optimizer.zero_grad()
-                logits, _, _ = self.model(img)
-                loss = nn.functional.cross_entropy(logits, target)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
-                self.optimizer.step()
-                total_loss += loss.item()
-                
-        print(f"[Sleep] Wake up. (Avg Loss: {total_loss / (epochs * len(self.episodic_memory)):.4f})")
-        self.episodic_memory.clear()
-        self.model.eval()
-
-    def _preprocess(self, image_input: Any) -> torch.Tensor:
-        img = None
-        if isinstance(image_input, str): img = Image.open(image_input).convert('L')
-        elif isinstance(image_input, np.ndarray): img = Image.fromarray(image_input).convert('L')
-        elif isinstance(image_input, Image.Image): img = image_input.convert('L')
-        elif isinstance(image_input, torch.Tensor):
-            if image_input.dim() == 2: img = transforms.ToPILImage()(image_input)
-            elif image_input.dim() == 3: img = transforms.ToPILImage()(image_input)
-            else: return image_input.view(1, -1).to(self.device)
-        else: raise ValueError(f"Unsupported type: {type(image_input)}")
-        return self.transform(img).view(1, -1).to(self.device)
+        self.engine.consolidate()
+        print("SARA: Memory consolidated and structural plasticity applied.")

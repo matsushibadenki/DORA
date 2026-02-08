@@ -1,127 +1,106 @@
-# ファイルパス: snn_research/social/synesthetic_dialogue.py
-# 日本語タイトル: Synesthetic Dialogue Manager (Grounding Game)
-# 目的: 話し手(Speaker)と聞き手(Listener)の間で、視覚情報と言語情報の
-#       相互変換（翻訳）ゲームを行い、シンボルグラウンディングを達成する。
+# directory: snn_research/social
+# file: synesthetic_dialogue.py
+# purpose: 共感覚と言語を統合した対話マネージャー (Brain v4廃止 -> SARA Engine統合版)
 
 import torch
-import torch.nn.functional as F
-from typing import Dict, Any
+import torch.nn as nn
+from typing import Dict, Any, List, Optional
 
-from snn_research.agent.synesthetic_agent import SynestheticAgent
-from snn_research.social.communication_channel import CommunicationChannel
+# 修正: 廃止されたBrainV4を削除し、モデルファクトリーを使用
+from snn_research.core.factories import create_model
+# 直接アダプターを使う場合のフォールバック
+from snn_research.models.adapters.sara_adapter import SaraAdapter
 
-class SynestheticDialogue:
-    def __init__(
-        self,
-        speaker: SynestheticAgent,
-        listener: SynestheticAgent,
-        channel: CommunicationChannel,
-        vocab_size: int = 1000
-    ):
-        self.speaker = speaker
-        self.listener = listener
-        self.channel = channel
-        self.vocab_size = vocab_size
-        self.device = speaker.device
+class SynestheticDialogueManager(nn.Module):
+    """
+    共感覚対話マネージャー:
+    ユーザーからのテキスト入力を、SARAエンジンの「概念空間(Concept Space)」へマッピングし、
+    色・音・感情の共感覚的な内部状態を経て応答を生成する。
+    """
 
-    def conduct_turn(self, target_image: torch.Tensor) -> Dict[str, Any]:
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__()
+        self.config = config
+        
+        # 言語モデル設定 (Embeddingなど)
+        self.vocab_size = config.get("vocab_size", 10000)
+        self.embed_dim = config.get("embed_dim", 256)
+        
+        # 単純なEmbedding層 (入力テキスト -> ベクトル)
+        self.embedding = nn.Embedding(self.vocab_size, self.embed_dim)
+        
+        # --- Core Brain (SARA Engine) への置き換え ---
+        # BrainV4の代わりに、最新のSARAエンジンを使用する
+        brain_config = config.get("brain_config", {})
+        # SARA向けに設定を強制上書き
+        brain_config.update({
+            "model_type": "sara_engine",  # ファクトリーでSaraAdapterを生成させる
+            "input_size": self.embed_dim,
+            "hidden_size": 1024,
+            "output_size": self.embed_dim, # 概念ベクトルとして出力
+            "enable_attractor": True
+        })
+        
+        try:
+            self.brain = create_model(brain_config)
+        except Exception as e:
+            print(f"Warning: Factory failed ({e}), falling back to direct SaraAdapter init.")
+            self.brain = SaraAdapter(brain_config)
+
+        # 応答生成器 (概念ベクトル -> テキスト確率)
+        self.decoder = nn.Linear(self.embed_dim, self.vocab_size)
+
+    def forward(self, input_ids: torch.Tensor, emotion_state: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         """
-        1ターンの対話を実行する。
-        
-        Flow:
-        1. [Speaker]  画像を見る -> 言葉(Token)を発する
-        2. [Channel]  言葉を伝送 (ノイズ付加)
-        3. [Listener] 言葉を聞く -> 情景を想像(Dream/Latent)する
-        4. [Judge]    Speakerが見た画像と、Listenerが想像した情景の一致度を判定
-        
-        Returns:
-            metrics: {'similarity': float, 'message': str, ...}
+        対話処理の実行
+        Args:
+            input_ids: [Batch, SeqLen] トークンID
+            emotion_state: [Batch, EmotionDim] 外部からの感情バイアス (オプション)
         """
-        batch_size = target_image.size(0)
+        # 1. テキストの埋め込み
+        # [Batch, Seq, Embed]
+        x = self.embedding(input_ids)
         
-        # --- 1. Speaker: See -> Speak ---
-        # Brainを使って画像から思考（トークン列）を生成
-        # SynestheticBrain.generate を利用
-        # start_token_id = 1 (BOS) と仮定
-        speaker_tokens = self.speaker.brain.generate(
-            image_input=target_image, 
-            start_token_id=1, 
-            max_new_tokens=5
-        )
-        # generateはlist[int]を返す仕様(Brain v4)だが、バッチ処理のためTensor化が必要
-        # ここでは簡易的にTensor変換 (B, Seq)
-        speaker_tensor = torch.tensor(speaker_tokens, device=self.device).view(batch_size, -1)
+        # 2. 時間方向の統合 (SNNへの入力用に平均化またはシーケンス処理)
+        # SARAがシーケンス対応ならそのまま渡すが、ここでは簡易的に平均化
+        if x.dim() > 2:
+            x_snn_input = x.mean(dim=1)
+        else:
+            x_snn_input = x
 
-        # --- 2. Channel: Transmit ---
-        received_tokens = self.channel.transmit_tokens(speaker_tensor)
-
-        # --- 3. Listener: Hear -> Dream (Imagine) ---
-        # 言葉から視覚的イメージ（またはその潜在表現）を再構成する
-        # ListenerのBrainでテキストをエンコードし、WorldModelのDecoderで映像化を試みる
+        # 3. 共感覚脳(SARA)による処理
+        # 内部でアトラクタが働き、入力刺激に近い「記憶概念」が想起される
+        concept_vector = self.brain(x_snn_input)
         
-        with torch.no_grad():
-            # A. テキストのエンコード (Brain)
-            # トークンID列をエンベディングに変換 (Brain内部のembedding層利用)
-            listener_text_emb = self.listener.brain.core_brain.embedding(received_tokens) # (B, Seq, D)
-            
-            # B. 想像 (Dreaming / Cross-Modal Generation)
-            # ここでは「言語コンテキスト」を「視覚コンテキスト」として解釈し、
-            # World ModelのDecoder (Observation Reconstructor) に通すことで
-            # 「言葉から連想される映像」を生成する。
-            
-            # Text Emb (B, Seq, D) -> Global Context (B, D)
-            context_vector = listener_text_emb.mean(dim=1)
-            
-            # World ModelのVision Decoderを使用
-            # (SpikingWorldModelは `decoders` 属性を持つ)
-            if 'vision' in self.listener.world_model.decoders:
-                imagined_image_feat = self.listener.world_model.decoders['vision'](context_vector)
-            else:
-                # Decoderがない場合は射影のみ (比較用)
-                imagined_image_feat = context_vector 
-
-        # --- 4. Evaluation (Grounding Check) ---
-        # Speakerが見ている「真の画像特徴」と、Listenerが「想像した特徴」を比較
+        # 4. 感情による変調 (Synesthesia Effect)
+        if emotion_state is not None:
+            # 感情ベクトルを概念ベクトルに加算・変調
+            if emotion_state.shape[-1] == concept_vector.shape[-1]:
+                concept_vector = concept_vector + emotion_state * 0.5
         
-        # 真の画像特徴を取得 (Speaker's encoder output)
-        with torch.no_grad():
-            true_image_feat = self.speaker.brain.encoder.encode(target_image, modality='image')
-            # 時間次元を平均化して特徴ベクトルにする
-            if true_image_feat.dim() == 3:
-                true_image_feat = true_image_feat.mean(dim=1)
-            
-            # 次元合わせ (Decoder出力とEncoder出力の次元が異なる場合の簡易補正)
-            if imagined_image_feat.shape != true_image_feat.shape:
-                # 線形補間等で合わせるか、射影層を通す必要があるが、
-                # ここではコサイン類似度計算のため、同じ空間に射影されていると仮定(D_model統一)
-                pass
-
-        # 類似度計算 (Cosine Similarity)
-        # 次元が一致している前提
-        sim = F.cosine_similarity(imagined_image_feat, true_image_feat, dim=-1).mean()
+        # 5. 言語へのデコード
+        logits = self.decoder(concept_vector)
         
-        # 報酬 (Reward)
-        # 類似度が高いほど高い報酬
-        reward = sim.item()
-        
-        # 学習 (Communication Update)
-        # Listenerは「聞いた言葉」と「正解画像(答え合わせ)」を使って、
-        # "この言葉はこういう見た目だ" という結合(Cross-modal attention)を強化する
-        self._update_agents(reward, received_tokens, target_image)
-
         return {
-            'similarity': reward,
-            'message': speaker_tokens,
-            'received': received_tokens.tolist()
+            "logits": logits,
+            "concept_state": concept_vector,
+            "memory_trace": self.get_memory_status()
         }
 
-    def _update_agents(self, reward: float, tokens: torch.Tensor, image: torch.Tensor):
+    def reply(self, text_input: str) -> str:
         """
-        コミュニケーションの成功度に基づいてエージェントを学習させる。
+        簡易的な応答生成メソッド (デモ用)
         """
-        # 簡易実装: 成功時(reward > threshold)のみ、教師あり学習的に微調整
-        if reward > 0.7: 
-            # Listener: Image -> Text の結びつきを強化 (逆も然り)
-            # ここではBrainのトレーニングモードへの切り替え等は省略し、
-            # 概念的な「強化」ステップとする。
-            pass
+        # ダミー処理: 実際はTokenizerが必要だが、ここでは動作確認用のモック
+        dummy_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+        with torch.no_grad():
+            output = self.forward(dummy_ids)
+        
+        # SARAの内部状態が変化したことを利用して「思考した」とみなす
+        return f"[SARA] I processed '{text_input}' through my attractor dynamics."
+
+    def get_memory_status(self):
+        """脳の記憶状態を取得"""
+        if hasattr(self.brain, "get_memory_state"):
+            return self.brain.get_memory_state()
+        return {}

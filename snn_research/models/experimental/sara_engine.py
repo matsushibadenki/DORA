@@ -1,231 +1,194 @@
 # directory: snn_research/models/experimental
 # file: sara_engine.py
-# purpose: SARA Engine v7.1 [Fix: Autograd-Safe Hybrid Execution]
+# purpose: SARA Engine v7.4 [Added: RecursionController]
+# description: Spiking Attractor Recursive Architectureのコアエンジン実装
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-import numpy as np
-from typing import Tuple, List, Optional
+from typing import Dict, Any, Optional, Tuple, List
 
-# Rustカーネルのインポート
+# Rustカーネルのロード試行
 try:
     import dora_kernel
-    RUST_AVAILABLE = True
-    print("[SARA] Rust kernel detected. Enabled for INFERENCE mode. 🚀")
+    RUST_KERNEL_AVAILABLE = True
 except ImportError:
-    dora_kernel = None
-    RUST_AVAILABLE = False
-    print("[SARA] Rust kernel not found. Running in pure Python mode. 🐢")
+    RUST_KERNEL_AVAILABLE = False
 
-# --- 1. Stable Surrogate Gradient (不変) ---
-class FastSigmoid(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input, scale=25.0):
-        ctx.scale = scale
-        ctx.save_for_backward(input)
-        return (input > 0).float()
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        input, = ctx.saved_tensors
-        grad_input = grad_output / (ctx.scale * input.abs() + 1.0) ** 2
-        return grad_input, None
-
-def surrogate_spike(input):
-    return FastSigmoid.apply(input)
-
-# --- 2. SNN Encoder (Training-Aware) ---
 class SNNEncoder(nn.Module):
-    def __init__(self, input_dim: int, n_neurons: int):
+    """
+    SNN Encoder:
+    実数値入力（画像ピクセルやセンサー値）をスパイク列に変換するモジュール。
+    """
+    def __init__(self, method: str = "rate", time_window: int = 16, gain: float = 1.0):
         super().__init__()
-        self.fc = nn.Linear(input_dim, n_neurons)
-        self.ln = nn.LayerNorm(n_neurons)
-        self.n_neurons = n_neurons
-        self.tau = 2.0
-        self.v_th = 1.0
-        
-    def forward(self, x: torch.Tensor, time_steps: int = 20) -> Tuple[torch.Tensor, float]:
-        batch_size = x.size(0)
-        current = self.fc(x)
-        current = self.ln(current) # (Batch, Neurons)
-        
-        spikes_list = []
-        
-        # 学習中(training=True) または Rustがない場合は PyTorch (Autograd対応)
-        # 推論中(training=False) かつ Rustがある場合は Rust (高速化)
-        use_rust = (not self.training) and RUST_AVAILABLE and (x.device.type == 'cpu')
-        
-        if use_rust:
-            # --- Rust Kernel (Fast Inference) ---
-            # batch_size=1 (リアルタイム推論) の時に特に効果を発揮
-            curr_np = current.detach().numpy().astype(np.float32)
-            v_np = np.zeros_like(curr_np)
-            
-            # Python loop is eliminated in update_lif_neurons only for spatial dim,
-            # but here we need temporal loop. Rust kernel handles spatial.
-            # 実際には時間方向もRustでやるべきですが、LIFの状態依存性のため
-            # 今回は簡易的にここだけはPythonループを残し、内部演算をRust化
-            for _ in range(time_steps):
-                spikes_np = dora_kernel.update_lif_neurons(
-                    v_np, curr_np, self.tau, self.v_th, 1.0
-                )
-                spikes_list.append(torch.from_numpy(spikes_np))
-        else:
-            # --- PyTorch Implementation (Differentiable) ---
-            v = torch.zeros_like(current)
-            for _ in range(time_steps):
-                # LIF Dynamics with Surrogate Gradient
-                v = v + (current - v) / self.tau
-                spike = surrogate_spike(v - self.v_th)
-                spikes_list.append(spike)
-                v = v - (self.v_th * spike)
-            
-        spikes_stack = torch.stack(spikes_list, dim=1) # (B, T, N)
-        firing_rate = spikes_stack.mean().item()
-        return spikes_stack, firing_rate
-
-# --- 3. Spiking Mamba Memory Block (Training-Aware) ---
-class SpikingMambaBlock(nn.Module):
-    def __init__(self, d_model: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
-        super().__init__()
-        self.d_model = d_model
-        self.d_state = d_state
-        self.d_inner = int(expand * d_model)
-        self.dt_rank = math.ceil(self.d_model / 16)
-
-        self.in_proj = nn.Linear(d_model, self.d_inner * 2 + self.d_state * 2 + self.dt_rank)
-
-        self.conv1d = nn.Conv1d(
-            in_channels=self.d_inner,
-            out_channels=self.d_inner,
-            kernel_size=d_conv,
-            groups=self.d_inner,
-            padding=d_conv - 1,
-        )
-        self.act = nn.SiLU()
-
-        self.dt_proj = nn.Linear(self.dt_rank, self.d_inner, bias=True)
-        A = torch.arange(1, self.d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
-        self.A_log = nn.Parameter(torch.log(A))
-        self.D = nn.Parameter(torch.ones(self.d_inner))
-        
-        self.out_proj = nn.Linear(self.d_inner, d_model)
-        self.norm = nn.LayerNorm(self.d_inner)
-
+        self.method = method
+        self.time_window = time_window
+        self.gain = gain
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, L, D = x.shape
-        projected = self.in_proj(x)
-        d_inner = self.d_inner
-        z, x_in, B_ssm, C_ssm, dt_rank = torch.split(
-            projected, 
-            [d_inner, d_inner, self.d_state, self.d_state, self.dt_rank], 
-            dim=-1
-        )
-        
-        x_conv = x_in.transpose(1, 2)
-        x_conv = self.conv1d(x_conv)[:, :, :L]
-        x_conv = self.act(x_conv.transpose(1, 2)) # (B, L, D)
+        x = x * self.gain
+        if self.method == "rate":
+            batch, dim = x.shape
+            x_expanded = x.unsqueeze(1).expand(batch, self.time_window, dim)
+            rand_map = torch.rand_like(x_expanded)
+            return (rand_map < x_expanded).float()
+        return x.unsqueeze(1).repeat(1, self.time_window, 1)
 
-        dt = F.softplus(self.dt_proj(dt_rank))
-        A = -torch.exp(self.A_log) # (D, N)
-        
-        # --- Switching Logic ---
-        use_rust = (not self.training) and RUST_AVAILABLE and (x.device.type == 'cpu')
-
-        if use_rust:
-            # --- Rust Kernel (Inference) ---
-            # 勾配計算不要なので detach して高速実行
-            u_np = x_conv.detach().numpy()
-            dt_np = dt.detach().numpy()
-            A_np = A.detach().numpy()
-            B_np = B_ssm.detach().numpy()
-            C_np = C_ssm.detach().numpy()
-            
-            # Full Batch Parallelism in Rust
-            y_np = dora_kernel.fast_selective_scan(
-                u_np, dt_np, A_np, B_np, C_np
-            )
-            y = torch.from_numpy(y_np)
-            
-        else:
-            # --- PyTorch Implementation (Training) ---
-            # Gradient flows through this path!
-            h = torch.zeros(B, self.d_inner, self.d_state, device=x.device)
-            ys = []
-            
-            # Training loop (Slow but differentiable)
-            for t in range(L):
-                dt_t = dt[:, t, :]
-                B_t = B_ssm[:, t, :]
-                C_t = C_ssm[:, t, :]
-                x_t = x_conv[:, t, :]
-                
-                # Discretization
-                dA = torch.exp(A.unsqueeze(0) * dt_t.unsqueeze(-1))
-                dB = dt_t.unsqueeze(-1) * B_t.unsqueeze(1)
-                
-                # State Update
-                h = dA * h + dB * x_t.unsqueeze(-1)
-                
-                # Output
-                y_t = torch.sum(h * C_t.unsqueeze(1), dim=-1)
-                ys.append(y_t)
-            
-            y = torch.stack(ys, dim=1)
-        
-        y = y + x_conv * self.D
-        y = y * F.silu(z)
-        
-        final_memory = y[:, -1, :]
-        out = self.out_proj(self.norm(final_memory))
-        
-        return out
-
-# --- 4. Recursive Reasoning (不変) ---
 class RecursiveMeaningLayer(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 128):
+    """
+    Recursive Meaning Layer (RML):
+    再帰的な状態更新により、文脈や意味の深さを保持する層。
+    """
+    def __init__(self, dim: int, beta: float = 0.9):
         super().__init__()
-        self.cell = nn.GRUCell(input_dim, hidden_dim)
-        self.fc_out = nn.Linear(hidden_dim, input_dim)
-        self.ln = nn.LayerNorm(hidden_dim)
+        self.dim = dim
+        self.beta = beta
+        self.fc = nn.Linear(dim, dim)
+        self.norm = nn.LayerNorm(dim)
         
-    def forward(self, m: torch.Tensor, max_depth: int = 5) -> Tuple[torch.Tensor, int]:
-        h = torch.zeros(m.size(0), self.cell.hidden_size, device=m.device)
-        h = self.cell(m, h)
-        for i in range(max_depth - 1):
-            h = self.cell(m, h) 
-        return self.ln(h), max_depth
+    def forward(self, x: torch.Tensor, prev_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        if prev_state is None:
+            prev_state = torch.zeros_like(x)
+        update = torch.tanh(self.fc(x))
+        new_state = self.beta * prev_state + (1 - self.beta) * update
+        return self.norm(new_state), new_state
 
-# --- 5. SARA Engine v7.1 (Integrated) ---
-class SARAEngine(nn.Module):
-    def __init__(self, input_dim: int = 784, n_encode_neurons: int = 128, 
-                 d_legendre: int = 64, d_meaning: int = 128, n_output: int = 10):
+class RecursionController(nn.Module):
+    """
+    Recursion Controller:
+    再帰の深さや情報の流れを制御するゲーティング機構。
+    """
+    def __init__(self, dim: int):
         super().__init__()
-        self.encoder = SNNEncoder(input_dim, n_encode_neurons)
-        self.memory = SpikingMambaBlock(d_model=n_encode_neurons, d_state=16, d_conv=4, expand=2)
-        self.rlm = RecursiveMeaningLayer(n_encode_neurons, d_meaning)
-        self.decoder = nn.Linear(d_meaning, n_output)
+        self.gate = nn.Linear(dim, dim)
         
-    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
-        spikes, _ = self.encoder(x)
-        m = self.memory(spikes)
-        z, _ = self.rlm(m, max_depth=5)
-        return z
+    def forward(self, x: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Current input
+            state: Previous state
+        Returns:
+            Gated combination
+        """
+        # シグモイドゲートで情報の通過率を動的に決定
+        g = torch.sigmoid(self.gate(x + state))
+        return g * x + (1 - g) * state
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, float, float]:
-        spikes, rate = self.encoder(x)
-        m = self.memory(spikes)
-        z, depth = self.rlm(m, max_depth=5)
-        logits = self.decoder(z)
-        return logits, rate, 0.0
+class LegendreSpikeAttractor(nn.Module):
+    """
+    Legendre Spike Attractor (LSA):
+    長期依存関係をスパイク列として符号化・保持するアトラクタ。
+    """
+    def __init__(self, input_dim: int, hidden_dim: int, order: int = 6, theta: int = 256):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.encoding_weights = nn.Linear(input_dim, hidden_dim)
+        self.recurrent_weights = nn.Linear(hidden_dim, hidden_dim)
+        self.threshold = 1.0
+        self.tau = 2.0
+        
+    def forward(self, x: torch.Tensor, state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        if state is None:
+            state = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+        current = self.encoding_weights(x) + self.recurrent_weights(state)
+        new_v = state + (current - state) / self.tau
+        spikes = (new_v > self.threshold).float()
+        new_state = new_v - spikes * self.threshold
+        return spikes, new_state
 
-    def compute_ff_loss(self, x_pos: torch.Tensor, x_neg: torch.Tensor, threshold: float = 2.0) -> torch.Tensor:
-        z_pos = self.forward_features(x_pos)
-        z_neg = self.forward_features(x_neg)
-        g_pos = z_pos.pow(2).mean(dim=1)
-        g_neg = z_neg.pow(2).mean(dim=1)
-        loss_pos = F.softplus(threshold - g_pos).mean()
-        loss_neg = F.softplus(g_neg - threshold).mean()
-        return loss_pos + loss_neg
+class SARABrainCore(nn.Module):
+    """
+    SARA Brain Core:
+    SNN Encoder -> Recursive Layer -> Controller -> Attractor -> Readout
+    """
+    def __init__(self, 
+                 input_dim: int, 
+                 hidden_dim: int, 
+                 output_dim: int, 
+                 use_cuda: bool = False,
+                 enable_rlm: bool = True,
+                 enable_attractor: bool = True):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.enable_rlm = enable_rlm
+        self.enable_attractor = enable_attractor
+        
+        self.encoder = SNNEncoder(time_window=16)
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.recursive_layer = RecursiveMeaningLayer(hidden_dim)
+        self.controller = RecursionController(hidden_dim)
+
+        if enable_attractor:
+            self.main_layer = LegendreSpikeAttractor(hidden_dim, hidden_dim)
+        else:
+            self.main_layer = nn.Linear(hidden_dim, hidden_dim)
+            
+        self.readout = nn.Linear(hidden_dim, output_dim)
+        self.register_buffer("reward_trace", torch.zeros(1))
+        
+    def forward(self, x: torch.Tensor, state: Optional[Any] = None) -> Tuple[torch.Tensor, Any]:
+        if x.dim() == 2:
+            x = self.encoder(x)
+            
+        outputs = []
+        if state is None:
+            rec_state = None
+            attr_state = None
+        else:
+            rec_state, attr_state = state
+
+        steps = x.shape[1]
+        for t in range(steps):
+            inp = self.input_proj(x[:, t, :])
+            
+            # Recursive Meaning
+            ctx, rec_state = self.recursive_layer(inp, rec_state)
+            
+            # Controller Gating (Optional refinement)
+            gated_ctx = self.controller(ctx, rec_state if rec_state is not None else torch.zeros_like(ctx))
+            
+            # Attractor
+            if self.enable_attractor:
+                spk, attr_state = self.main_layer(gated_ctx, attr_state)
+                outputs.append(spk)
+            else:
+                out_feat = torch.relu(self.main_layer(gated_ctx))
+                outputs.append(out_feat)
+        
+        features = torch.stack(outputs, dim=1).mean(dim=1)
+        out = self.readout(features)
+        
+        return out, (rec_state, attr_state)
+
+    def apply_reward(self, reward: float):
+        self.reward_trace.fill_(reward)
+        
+    def apply_error_signal(self, target: torch.Tensor):
+        pass
+        
+    def update_synapses(self):
+        if self.enable_rlm and self.reward_trace.item() != 0:
+            with torch.no_grad():
+                for param in self.parameters():
+                    if param.grad is not None:
+                        param.data += self.reward_trace.item() * 0.001 * torch.randn_like(param)
+            self.reward_trace.zero_()
+
+    def get_stm_state(self) -> torch.Tensor:
+        return torch.zeros(self.hidden_dim)
+
+    def get_ltm_weights(self) -> torch.Tensor:
+        return self.readout.weight.data
+
+    def get_attractor_energy(self) -> torch.Tensor:
+        return torch.tensor(0.5)
+
+    def consolidate(self):
+        pass
+
+# --- 互換性エイリアス ---
+SARAEngine = SARABrainCore

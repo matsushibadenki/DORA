@@ -1,128 +1,88 @@
 # directory: snn_research/cognitive_architecture
 # file: neuro_symbolic_bridge.py
-# purpose: 直感(System 1)と論理(System 2)を調停するニューロシンボリック・ブリッジの実装
+# purpose: 直感(System 1)と論理(System 2)を統合するブリッジモジュール
 
 import torch
-import time
-from typing import Any, Dict, Optional, Tuple
+import torch.nn as nn
+from typing import Dict, Any, Optional, Tuple
 
-# SARA Adapterのインポート（System 1として使用）
-try:
-    from snn_research.models.adapters.sara_adapter import SARAAdapter
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-    from snn_research.models.adapters.sara_adapter import SARAAdapter
+# 修正: SARAAdapter -> SaraAdapter (大文字小文字の修正)
+from snn_research.models.adapters.sara_adapter import SaraAdapter
 
-class System2Oracle:
+class NeuroSymbolicBridge(nn.Module):
     """
-    System 2（論理推論・高度な知識）のシミュレーター
-    現実のユースケースでは、ここがLLM (GPT-4) や 形式的推論エンジン に置き換わります。
+    ニューロシンボリックAIブリッジ:
+    SNN（SARAエンジン）による高速な直感・パターン認識（System 1）と、
+    シンボリックな推論・論理処理（System 2）を接続するインターフェース。
     """
-    def __init__(self, cost_per_call: float = 10.0):
-        self.cost_per_call = cost_per_call  # System 2の起動コスト（エネルギー/時間）
-        self.total_energy_used = 0.0
 
-    def query(self, input_data: Any, correct_label: int) -> Dict[str, Any]:
-        """
-        高コストな推論を実行し、正確な答えと「理由」を返す
-        """
-        # シミュレーションされた思考時間（重い処理を表現）
-        time.sleep(0.5)
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__()
+        self.config = config
+        self.input_dim = config.get("input_dim", 784)
+        self.symbolic_dim = config.get("symbolic_dim", 128)
         
-        self.total_energy_used += self.cost_per_call
+        # System 1: SARA Engine (Intuition)
+        # 既存のSARAアダプターを利用してRustバックエンドのSNNを駆動
+        sara_config = config.get("sara_config", {
+            "input_size": self.input_dim,
+            "hidden_size": 512,
+            "output_size": self.symbolic_dim,
+            "enable_rlm": True,
+            "enable_attractor": True
+        })
+        self.system1_snn = SaraAdapter(sara_config)
+
+        # System 2: Symbolic Reasoner (Logic)
+        # ここでは単純な線形層としてプレースホルダー実装しているが、
+        # 将来的にはグラフニューラルネットワーク(GNN)や論理エンジンへの接続を行う
+        self.system2_logic = nn.Sequential(
+            nn.Linear(self.symbolic_dim, self.symbolic_dim),
+            nn.ReLU(),
+            nn.Linear(self.symbolic_dim, 10) # 最終的な判断・分類
+        )
+
+        self.threshold = config.get("confidence_threshold", 0.8)
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        順伝播:
+        1. SNNで直感的な処理を行う
+        2. 自信度(Confidence)が高い場合はそのまま出力 (System 1)
+        3. 自信度が低い場合は論理層で再考する (System 2)
+        """
+        # System 1: Fast Intuition
+        # SARAエンジンからの出力（スパイク発火率や膜電位）
+        intuition_signal = self.system1_snn(x)
         
+        # 自信度の計算（最大値やエントロピーなど）
+        confidence = torch.max(torch.softmax(intuition_signal, dim=-1), dim=-1)[0]
+        
+        # System 2: Slow Logic (条件付き実行)
+        # バッチ処理のため、実際にはマスク処理や分岐が必要だが、ここでは簡易的に全結合
+        logic_output = self.system2_logic(intuition_signal)
+        
+        # 統合戦略: 重み付け平均 (Gating)
+        # confidenceが高いほどSystem 1を重視、低いほどSystem 2を重視
+        gate = confidence.unsqueeze(-1)
+        # 次元合わせが必要な場合は調整 (ここでは簡易化)
+        if intuition_signal.shape[-1] != logic_output.shape[-1]:
+             # 次元が違う場合はLogicを正とする（あるいは射影する）
+             final_output = logic_output
+        else:
+             final_output = gate * intuition_signal + (1 - gate) * logic_output
+
         return {
-            "answer": correct_label,
-            "reasoning": f"Deep analysis confirms features matching class {correct_label}.",
-            "confidence": 1.0
+            "output": final_output,
+            "intuition": intuition_signal,
+            "logic": logic_output,
+            "confidence": confidence
         }
 
-class NeuroSymbolicBridge:
-    """
-    System 1 (SARA) と System 2 (Oracle/LLM) の調停役
-    不確実性（Uncertainty）に基づいて処理ルートを動的に切り替える（メタ認知）。
-    """
-    def __init__(self, system1_agent: SARAAdapter, confidence_threshold: float = 0.85):
-        self.system1 = system1_agent
-        self.system2 = System2Oracle()
-        self.threshold = confidence_threshold
-        
-        # 統計情報
-        self.stats = {
-            "s1_calls": 0,
-            "s2_calls": 0,
-            "autonomous_learning_events": 0
-        }
-
-    def process_input(self, input_data: Any, correct_label: Optional[int] = None) -> Dict[str, Any]:
+    def consolidate(self):
         """
-        入力に対する統合的な推論・学習プロセス
+        睡眠時などに呼び出し。
+        論理的結論を直感（SARAの長期記憶）へフィードバックして蒸留する。
         """
-        # --- Step 1: System 1 (Fast & Cheap) ---
-        start_time = time.time()
-        s1_result = self.system1.think(input_data)
-        s1_latency = (time.time() - start_time) * 1000
-        
-        self.stats["s1_calls"] += 1
-        
-        pred = s1_result["prediction"]
-        conf = s1_result["confidence"]
-        
-        # --- Step 2: Meta-Cognitive Check ---
-        # 確信度が閾値以上なら、System 1の答えを採用（省エネ）
-        if conf >= self.threshold:
-            return {
-                "source": "System 1 (Intuition)",
-                "prediction": pred,
-                "confidence": conf,
-                "latency": s1_latency,
-                "energy_cost": 1.0, # SNNの低コスト
-                "explanation": "Intuitive match found."
-            }
-            
-        # --- Step 3: System 2 (Slow & Expensive) ---
-        # 確信度が低い、かつ正解ラベル（環境からのフィードバックや教師）にアクセス可能な場合
-        # 現実では「人間に聞く」や「LLMに投げる」アクションに相当
-        if correct_label is not None:
-            print(f"  [Meta-Cognition] Uncertainty detected (Conf: {conf:.1%}). Waking up System 2...")
-            
-            s2_result = self.system2.query(input_data, correct_label)
-            self.stats["s2_calls"] += 1
-            
-            s2_answer = s2_result["answer"]
-            
-            # --- Step 4: Active Learning (Plasticity) ---
-            # System 2の答えを使ってSystem 1を即時教育する
-            print(f"  [Plasticity] Teaching System 1: {s2_answer} (Reason: {s2_result['reasoning']})")
-            loss = self.system1.learn_instance(input_data, s2_answer, max_steps=10)
-            self.stats["autonomous_learning_events"] += 1
-            
-            return {
-                "source": "System 2 (Reasoning)",
-                "prediction": s2_answer,
-                "confidence": 1.0,
-                "latency": s1_latency + 500.0, # S2の遅延を加算
-                "energy_cost": 100.0, # 高コスト
-                "explanation": s2_result["reasoning"],
-                "learning_loss": loss
-            }
-        
-        # System 2が使えない場合はSystem 1の不確実な答えを返す
-        return {
-            "source": "System 1 (Uncertain)",
-            "prediction": pred,
-            "confidence": conf,
-            "latency": s1_latency,
-            "energy_cost": 1.0,
-            "explanation": "Low confidence, but no teacher available."
-        }
-
-    def print_stats(self):
-        print("\n=== Neuro-Symbolic Bridge Statistics ===")
-        print(f"System 1 Calls (Fast): {self.stats['s1_calls']}")
-        print(f"System 2 Calls (Slow): {self.stats['s2_calls']}")
-        print(f"Learning Events      : {self.stats['autonomous_learning_events']}")
-        print(f"System 2 Energy Used : {self.system2.total_energy_used}")
-        print("========================================")
+        self.system1_snn.consolidate_memory()
+        print("NeuroSymbolicBridge: Logic consolidated into Intuition.")

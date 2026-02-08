@@ -1,230 +1,88 @@
-# ファイルパス: snn_research/models/temporal_snn.py
-# (修正: スパイク集計順序の修正)
-# Title: 時系列データ特化 SNN モデル (RSNN / GatedSNN)
-# Description:
-# - 修正: forwardメソッド内で、get_total_spikes() を set_stateful(False) の前に移動。
+# directory: snn_research/models/bio
+# filename: temporal_snn.py
+# description: 時系列データ処理SNN (後方互換性エイリアス追加版)
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Dict, Any, Type, Optional, List, cast
-import logging
+from typing import Dict, Any, Optional
 
-# 既存のニューロンクラスをインポート
-from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
-from snn_research.core.base import BaseModel
+# LIFニューロン定義 (前回と同様)
+try:
+    from snn_research.core.neurons.lif_neuron import LIFNeuron
+except ImportError:
+    class LIFNeuron(nn.Module):
+        def __init__(self, tau=2.0):
+            super().__init__()
+            self.tau = tau
+            self.threshold = 1.0
+        def forward(self, x):
+            return (x > self.threshold).float()
 
-# spikingjellyのfunctionalをリセットに利用
-# type: ignore[import-untyped]
-from spikingjelly.activation_based import functional
-
-logger = logging.getLogger(__name__)
-
-
-class SimpleRSNN(BaseModel):
+class TemporalSNN(nn.Module):
     """
-    時系列データ処理に特化したシンプルな再帰型SNN (RSNN) モデル。
+    TemporalSNN:
+    時系列入力（音声、心電図、時系列センサーデータなど）を処理するための
+    再帰結合を持つスパイキングニューラルネットワーク。
+    (旧名: SimpleRSNN)
     """
-    hidden_neuron: nn.Module
-    output_neuron: Optional[nn.Module]
 
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        output_dim: int,
-        time_steps: int,
-        neuron_config: Dict[str, Any],
-        output_spikes: bool = True
-    ):
+    def __init__(self, config: Dict[str, Any] = None, **kwargs):
         super().__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
-        self.time_steps = time_steps
-        self.output_spikes = output_spikes
+        self.config = config if isinstance(config, dict) else kwargs
+        
+        self.input_size = self.config.get("input_size", 128)
+        self.hidden_size = self.config.get("hidden_size", 256)
+        self.output_size = self.config.get("output_size", 10)
+        self.time_steps = self.config.get("time_steps", 16)
+        
+        # 入力層 -> 隠れ層
+        self.fc_in = nn.Linear(self.input_size, self.hidden_size)
+        self.lif_in = LIFNeuron()
+        
+        # 再帰結合 (Recurrent)
+        self.fc_rec = nn.Linear(self.hidden_size, self.hidden_size)
+        self.lif_rec = LIFNeuron()
+        
+        # 出力層
+        self.fc_out = nn.Linear(self.hidden_size, self.output_size)
+        
+        nn.init.kaiming_normal_(self.fc_in.weight)
+        nn.init.orthogonal_(self.fc_rec.weight)
+        nn.init.xavier_normal_(self.fc_out.weight)
 
-        neuron_type = neuron_config.get("type", "lif")
-        neuron_params = neuron_config.copy()
-        neuron_params.pop('type', None)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        順伝播処理
+        Args:
+            x: [Batch, Time, Features] or [Batch, Features]
+        Returns:
+            out: [Batch, Output_Size]
+        """
+        batch_size = x.shape[0]
+        
+        # 入力が [Batch, Features] の場合は時間次元を追加
+        if x.dim() == 2:
+            x = x.unsqueeze(1).repeat(1, self.time_steps, 1)
+            
+        h = torch.zeros(batch_size, self.hidden_size, device=x.device)
+        spike_record = []
+        
+        # 時間ステップごとの処理
+        steps = x.shape[1] if x.dim() > 1 else self.time_steps
+        for t in range(steps):
+            input_t = x[:, t, :] if x.dim() > 2 else x
+            
+            current = self.fc_in(input_t) + self.fc_rec(h)
+            spike = self.lif_rec(current)
+            h = spike
+            spike_record.append(spike)
+            
+        spike_stack = torch.stack(spike_record, dim=1)
+        mean_firing_rate = spike_stack.mean(dim=1)
+        out = self.fc_out(mean_firing_rate)
+        
+        return out
 
-        neuron_class: Type[nn.Module]
-        if neuron_type == 'lif':
-            neuron_class = AdaptiveLIFNeuron
-        elif neuron_type == 'izhikevich':
-            neuron_class = IzhikevichNeuron
-        else:
-            raise ValueError(f"Unknown neuron type: {neuron_type}")
-
-        self.input_to_hidden = nn.Linear(input_dim, hidden_dim)
-        self.recurrent = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.hidden_neuron = neuron_class(features=hidden_dim, **neuron_params)
-        self.hidden_to_output = nn.Linear(hidden_dim, output_dim)
-
-        if self.output_spikes:
-            self.output_neuron = neuron_class(
-                features=output_dim, **neuron_params)
-        else:
-            self.output_neuron = None
-
-        self._init_weights()
-        logger.info(
-            f"✅ SimpleRSNN initialized (In: {input_dim}, Hidden: {hidden_dim}, Out: {output_dim})")
-
-    def forward(
-        self,
-        input_sequence: torch.Tensor,
-        return_spikes: bool = False,
-        **kwargs: Any
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
-        B, T_input, _ = input_sequence.shape
-        device = input_sequence.device
-
-        functional.reset_net(self)
-
-        hidden_spikes = torch.zeros(B, self.hidden_dim, device=device)
-        output_history: List[torch.Tensor] = []
-
-        for t in range(T_input):
-            input_t = input_sequence[:, t, :]
-            recurrent_input = self.recurrent(hidden_spikes)
-            hidden_input_current = self.input_to_hidden(
-                input_t) + recurrent_input
-
-            hidden_spikes, _ = self.hidden_neuron(hidden_input_current)
-
-            output_input_current = self.hidden_to_output(hidden_spikes)
-
-            output_t: torch.Tensor
-            if self.output_neuron:
-                output_t, _ = self.output_neuron(output_input_current)
-            else:
-                output_t = output_input_current
-
-            output_history.append(output_t)
-
-        final_output_sequence = torch.stack(output_history, dim=1)
-        final_logits = final_output_sequence[:, -1, :]
-
-        # 統計情報
-        avg_spikes_val = self.get_total_spikes() / (B * T_input) if return_spikes else 0.0
-        avg_spikes = torch.tensor(avg_spikes_val, device=device)
-        mem = torch.tensor(0.0, device=device)
-
-        return final_logits, avg_spikes, mem
-
-
-class GatedSNN(BaseModel):
-    """
-    Gated Spiking Recurrent Neural Network (GSRNN)。
-    """
-    lif_z: nn.Module
-    lif_r: nn.Module
-    lif_h: nn.Module
-
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        output_dim: int,
-        time_steps: int,
-        neuron_config: Dict[str, Any],
-        **kwargs: Any
-    ):
-        super().__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
-        self.time_steps = time_steps
-
-        neuron_type = neuron_config.get("type", "lif")
-        neuron_params = neuron_config.copy()
-        neuron_params.pop('type', None)
-
-        neuron_class: Type[nn.Module]
-        if neuron_type == 'lif':
-            neuron_class = AdaptiveLIFNeuron
-        elif neuron_type == 'izhikevich':
-            neuron_class = IzhikevichNeuron
-        else:
-            raise ValueError(f"Unknown neuron type: {neuron_type}")
-
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
-        self.W_z = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.U_z = nn.Linear(hidden_dim, hidden_dim, bias=True)
-        self.W_r = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.U_r = nn.Linear(hidden_dim, hidden_dim, bias=True)
-        self.W_h = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.U_h = nn.Linear(hidden_dim, hidden_dim, bias=True)
-
-        gate_params = neuron_params.copy()
-        if 'base_threshold' in gate_params:
-            gate_params['base_threshold'] = 0.5
-
-        self.lif_z = neuron_class(features=hidden_dim, **gate_params)
-        self.lif_r = neuron_class(features=hidden_dim, **gate_params)
-        self.lif_h = neuron_class(features=hidden_dim, **neuron_params)
-
-        self.output_proj = nn.Linear(hidden_dim, output_dim)
-
-        self._init_weights()
-        logger.info("✅ GatedSNN (Spiking GRU) initialized.")
-
-    def forward(
-        self,
-        input_sequence: torch.Tensor,
-        return_spikes: bool = False,
-        **kwargs: Any
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
-        B, T_input, _ = input_sequence.shape
-        device = input_sequence.device
-
-        functional.reset_net(self)
-
-        if hasattr(self.lif_z, 'set_stateful'):
-            cast(Any, self.lif_z).set_stateful(True)
-        if hasattr(self.lif_r, 'set_stateful'):
-            cast(Any, self.lif_r).set_stateful(True)
-        if hasattr(self.lif_h, 'set_stateful'):
-            cast(Any, self.lif_h).set_stateful(True)
-
-        h_prev = torch.zeros(B, self.hidden_dim, device=device)
-        output_history: List[torch.Tensor] = []
-
-        for t in range(T_input):
-            input_t = input_sequence[:, t, :]
-            x_t = self.input_proj(input_t)
-
-            z_t_input = self.W_z(x_t) + self.U_z(h_prev)
-            z_t_spike, _ = self.lif_z(z_t_input)
-
-            r_t_input = self.W_r(x_t) + self.U_r(h_prev)
-            r_t_spike, _ = self.lif_r(r_t_input)
-
-            h_hat_input = self.W_h(x_t) + self.U_h(r_t_spike * h_prev)
-            h_hat_spike, _ = self.lif_h(h_hat_input)
-
-            h_t = h_prev * (1.0 - z_t_spike) + h_hat_spike * z_t_spike
-            h_prev = h_t
-            output_history.append(h_t)
-
-        # --- 修正: リセット前にスパイクを集計 ---
-        avg_spikes_val = self.get_total_spikes(
-        ) / (B * T_input) if return_spikes and T_input > 0 else 0.0
-        # ------------------------------------
-
-        if hasattr(self.lif_z, 'set_stateful'):
-            cast(Any, self.lif_z).set_stateful(False)
-        if hasattr(self.lif_r, 'set_stateful'):
-            cast(Any, self.lif_r).set_stateful(False)
-        if hasattr(self.lif_h, 'set_stateful'):
-            cast(Any, self.lif_h).set_stateful(False)
-
-        final_hidden_state = output_history[-1]
-        final_logits = self.output_proj(final_hidden_state)
-
-        avg_spikes = torch.tensor(avg_spikes_val, device=device)
-        mem = torch.tensor(0.0, device=device)
-
-        return final_logits, avg_spikes, mem
+# --- 後方互換性のためのエイリアス ---
+# これにより `from .temporal_snn import SimpleRSNN` が成功するようになります
+SimpleRSNN = TemporalSNN
