@@ -1,0 +1,15 @@
+{
+    "timestamp": "2026-01-31T10:56:55.303420",
+    "config": {
+        "runs": 1,
+        "epochs": 1,
+        "batch_size": 100,
+        "time_steps": 8,
+        "threshold": 95.0,
+        "subset_size": null
+    },
+    "accuracies": [
+        10.03
+    ],
+    "mean_accuracy": 10.03
+}

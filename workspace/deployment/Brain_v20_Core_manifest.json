@@ -1,0 +1,115 @@
+{
+    "total_neurons": 54481,
+    "total_synapses": 7252096,
+    "quantized_layers": [
+        {
+            "name": "layers.0.in_proj",
+            "neurons": 512,
+            "synapses": 65536,
+            "w_min": -0.08838531374931335,
+            "w_max": 0.08838650584220886,
+            "bits": 8
+        },
+        {
+            "name": "layers.0.x_proj",
+            "neurons": 416,
+            "synapses": 106496,
+            "w_min": -0.06249898672103882,
+            "w_max": 0.06249934434890747,
+            "bits": 8
+        },
+        {
+            "name": "layers.0.out_proj",
+            "neurons": 128,
+            "synapses": 32768,
+            "w_min": -0.06249948590993881,
+            "w_max": 0.06249842792749405,
+            "bits": 8
+        },
+        {
+            "name": "layers.1.in_proj",
+            "neurons": 512,
+            "synapses": 65536,
+            "w_min": -0.08838822692632675,
+            "w_max": 0.08838596194982529,
+            "bits": 8
+        },
+        {
+            "name": "layers.1.x_proj",
+            "neurons": 416,
+            "synapses": 106496,
+            "w_min": -0.06249792128801346,
+            "w_max": 0.06249891221523285,
+            "bits": 8
+        },
+        {
+            "name": "layers.1.out_proj",
+            "neurons": 128,
+            "synapses": 32768,
+            "w_min": -0.06249956786632538,
+            "w_max": 0.06248973309993744,
+            "bits": 8
+        },
+        {
+            "name": "layers.2.in_proj",
+            "neurons": 512,
+            "synapses": 65536,
+            "w_min": -0.08838808536529541,
+            "w_max": 0.08838267624378204,
+            "bits": 8
+        },
+        {
+            "name": "layers.2.x_proj",
+            "neurons": 416,
+            "synapses": 106496,
+            "w_min": -0.06249801814556122,
+            "w_max": 0.0624975860118866,
+            "bits": 8
+        },
+        {
+            "name": "layers.2.out_proj",
+            "neurons": 128,
+            "synapses": 32768,
+            "w_min": -0.06249883770942688,
+            "w_max": 0.06249614059925079,
+            "bits": 8
+        },
+        {
+            "name": "layers.3.in_proj",
+            "neurons": 512,
+            "synapses": 65536,
+            "w_min": -0.08838760852813721,
+            "w_max": 0.08838554471731186,
+            "bits": 8
+        },
+        {
+            "name": "layers.3.x_proj",
+            "neurons": 416,
+            "synapses": 106496,
+            "w_min": -0.06249977648258209,
+            "w_max": 0.06249650567770004,
+            "bits": 8
+        },
+        {
+            "name": "layers.3.out_proj",
+            "neurons": 128,
+            "synapses": 32768,
+            "w_min": -0.062495023012161255,
+            "w_max": 0.0624970942735672,
+            "bits": 8
+        },
+        {
+            "name": "head",
+            "neurons": 50257,
+            "synapses": 6432896,
+            "w_min": -0.08838819712400436,
+            "w_max": 0.08838829398155212,
+            "bits": 8
+        }
+    ],
+    "estimated_power_mW": 752.2096,
+    "target": "Matsushiba_Neuromorphic_Chip_v1",
+    "core_mapping": {
+        "required_cores": 54
+    }
+}

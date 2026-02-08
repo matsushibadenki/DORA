@@ -1,6 +1,6 @@
 # directory: snn_research/models/experimental
 # file: sara_engine.py
-# purpose: SARA Engine v7.0 [Rust Integration: Accelerated SNN & Mamba]
+# purpose: SARA Engine v7.1 [Fix: Autograd-Safe Hybrid Execution]
 
 import torch
 import torch.nn as nn
@@ -13,11 +13,11 @@ from typing import Tuple, List, Optional
 try:
     import dora_kernel
     RUST_AVAILABLE = True
-    print("[SARA] Rust kernel loaded successfully. 🚀")
+    print("[SARA] Rust kernel detected. Enabled for INFERENCE mode. 🚀")
 except ImportError:
     dora_kernel = None
     RUST_AVAILABLE = False
-    print("[SARA] Warning: dora_kernel not found. Using slow Python fallback. 🐢")
+    print("[SARA] Rust kernel not found. Running in pure Python mode. 🐢")
 
 # --- 1. Stable Surrogate Gradient (不変) ---
 class FastSigmoid(torch.autograd.Function):
@@ -36,7 +36,7 @@ class FastSigmoid(torch.autograd.Function):
 def surrogate_spike(input):
     return FastSigmoid.apply(input)
 
-# --- 2. SNN Encoder (Rust Accelerated) ---
+# --- 2. SNN Encoder (Training-Aware) ---
 class SNNEncoder(nn.Module):
     def __init__(self, input_dim: int, n_neurons: int):
         super().__init__()
@@ -53,23 +53,30 @@ class SNNEncoder(nn.Module):
         
         spikes_list = []
         
-        # Rustカーネルが利用可能 かつ CPU実行時のみ使用 (GPU時はPyTorchの方が速い場合があるため)
-        if RUST_AVAILABLE and x.device.type == 'cpu':
-            # Rust用にNumpyへ変換 (オーバーヘッドはあるが計算量が多い場合は有利)
+        # 学習中(training=True) または Rustがない場合は PyTorch (Autograd対応)
+        # 推論中(training=False) かつ Rustがある場合は Rust (高速化)
+        use_rust = (not self.training) and RUST_AVAILABLE and (x.device.type == 'cpu')
+        
+        if use_rust:
+            # --- Rust Kernel (Fast Inference) ---
+            # batch_size=1 (リアルタイム推論) の時に特に効果を発揮
             curr_np = current.detach().numpy().astype(np.float32)
             v_np = np.zeros_like(curr_np)
             
+            # Python loop is eliminated in update_lif_neurons only for spatial dim,
+            # but here we need temporal loop. Rust kernel handles spatial.
+            # 実際には時間方向もRustでやるべきですが、LIFの状態依存性のため
+            # 今回は簡易的にここだけはPythonループを残し、内部演算をRust化
             for _ in range(time_steps):
-                # Rustで一括更新 (In-place update for v_np)
                 spikes_np = dora_kernel.update_lif_neurons(
                     v_np, curr_np, self.tau, self.v_th, 1.0
                 )
-                # Tensorに戻す
                 spikes_list.append(torch.from_numpy(spikes_np))
         else:
-            # Python Fallback
+            # --- PyTorch Implementation (Differentiable) ---
             v = torch.zeros_like(current)
             for _ in range(time_steps):
+                # LIF Dynamics with Surrogate Gradient
                 v = v + (current - v) / self.tau
                 spike = surrogate_spike(v - self.v_th)
                 spikes_list.append(spike)
@@ -79,9 +86,8 @@ class SNNEncoder(nn.Module):
         firing_rate = spikes_stack.mean().item()
         return spikes_stack, firing_rate
 
-# --- 3. Spiking Mamba Memory Block (Rust Hybrid) ---
+# --- 3. Spiking Mamba Memory Block (Training-Aware) ---
 class SpikingMambaBlock(nn.Module):
-    # ... (__init__ は変更なし) ...
     def __init__(self, d_model: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
         super().__init__()
         self.d_model = d_model
@@ -125,37 +131,48 @@ class SpikingMambaBlock(nn.Module):
         dt = F.softplus(self.dt_proj(dt_rank))
         A = -torch.exp(self.A_log) # (D, N)
         
-        # --- Rust Kernel Call (Batch Accelerated) ---
-        if RUST_AVAILABLE and x.device.type == 'cpu':
-            # Contiguousなメモリレイアウトを確保するために .contiguous() を呼ぶ
-            u_np = x_conv.detach().numpy() # (B, L, D)
-            dt_np = dt.detach().numpy()    # (B, L, D)
-            A_np = A.detach().numpy()      # (D, N)
-            B_np = B_ssm.detach().numpy()  # (B, L, N)
-            C_np = C_ssm.detach().numpy()  # (B, L, N)
+        # --- Switching Logic ---
+        use_rust = (not self.training) and RUST_AVAILABLE and (x.device.type == 'cpu')
+
+        if use_rust:
+            # --- Rust Kernel (Inference) ---
+            # 勾配計算不要なので detach して高速実行
+            u_np = x_conv.detach().numpy()
+            dt_np = dt.detach().numpy()
+            A_np = A.detach().numpy()
+            B_np = B_ssm.detach().numpy()
+            C_np = C_ssm.detach().numpy()
             
-            # バッチごとではなく、全体を一括で渡す (Parallelism happens in Rust)
+            # Full Batch Parallelism in Rust
             y_np = dora_kernel.fast_selective_scan(
                 u_np, dt_np, A_np, B_np, C_np
             )
             y = torch.from_numpy(y_np)
             
         else:
-            # Python Fallback
+            # --- PyTorch Implementation (Training) ---
+            # Gradient flows through this path!
             h = torch.zeros(B, self.d_inner, self.d_state, device=x.device)
             ys = []
+            
+            # Training loop (Slow but differentiable)
             for t in range(L):
                 dt_t = dt[:, t, :]
                 B_t = B_ssm[:, t, :]
                 C_t = C_ssm[:, t, :]
                 x_t = x_conv[:, t, :]
                 
+                # Discretization
                 dA = torch.exp(A.unsqueeze(0) * dt_t.unsqueeze(-1))
                 dB = dt_t.unsqueeze(-1) * B_t.unsqueeze(1)
                 
+                # State Update
                 h = dA * h + dB * x_t.unsqueeze(-1)
+                
+                # Output
                 y_t = torch.sum(h * C_t.unsqueeze(1), dim=-1)
                 ys.append(y_t)
+            
             y = torch.stack(ys, dim=1)
         
         y = y + x_conv * self.D
@@ -181,7 +198,7 @@ class RecursiveMeaningLayer(nn.Module):
             h = self.cell(m, h) 
         return self.ln(h), max_depth
 
-# --- 5. SARA Engine v7.0 (Integrated) ---
+# --- 5. SARA Engine v7.1 (Integrated) ---
 class SARAEngine(nn.Module):
     def __init__(self, input_dim: int = 784, n_encode_neurons: int = 128, 
                  d_legendre: int = 64, d_meaning: int = 128, n_output: int = 10):

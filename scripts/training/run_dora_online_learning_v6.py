@@ -1,6 +1,6 @@
 # scripts/training/run_dora_online_learning_v6.py
-# Japanese Title: DORA オンライン学習 v10.0 (強結合・高反応版)
-# Description: スパイクの「数」ではなく結合の「強さ」で発火を保証するよう修正。入力特徴に対する感度を大幅に高めたバージョン。
+# Japanese Title: DORA オンライン学習 v13.0 (ポアソン・レートコーディング版)
+# Description: 入力画像を時間的なスパイク列(Poisson Spike Train)に変換して入力することで、信号強度をアナログ的に表現し、学習の安定性と精度を飛躍させる。
 
 import sys
 import os
@@ -12,31 +12,75 @@ from tqdm import tqdm
 
 sys.path.append(os.getcwd())
 
+# 標準のSNNモジュールを使用（パッチなし）
 from snn_research.core.snn_core import SpikingNeuralSubstrate
 from snn_research.core.neuromorphic_os import NeuromorphicOS
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("DORA_Learner_v10_HighGain")
+logger = logging.getLogger("DORA_Learner_v13_Poisson")
 
-class DORAOnlineLearnerV10:
+# -----------------------------------------------------------------------------
+# 【拡張】ポアソン入力対応SNNコア
+# -----------------------------------------------------------------------------
+class PoissonSNN(SpikingNeuralSubstrate):
+    def forward_step(self, ext_inputs: dict, learning: bool = True, dreaming: bool = False, **kwargs) -> dict:
+        """
+        画像をポアソンスパイク列に変換してシミュレーションを実行するオーバーライドメソッド
+        """
+        simulation_duration = kwargs.get("duration", 50.0) # 1枚あたり50ms処理
+        
+        # 1. 入力スパイクの生成 (Poisson Process)
+        if not dreaming:
+            for name, tensor in ext_inputs.items():
+                if name in self.group_indices:
+                    start_id, _ = self.group_indices[name]
+                    # テンソルを確率密度として扱う (0.0~1.0)
+                    # 値が大きいほど、高頻度でスパイクが発生する
+                    input_probs = torch.clamp(tensor.flatten(), 0, 1).cpu().numpy()
+                    
+                    # アクティブな画素について、時間軸上でスパイクを生成
+                    active_indices = np.where(input_probs > 0.1)[0]
+                    
+                    for idx in active_indices:
+                        rate = input_probs[idx] * 0.1 # スパイク生成確率係数
+                        # durationの間、毎ステップ確率判定
+                        for t in range(int(simulation_duration)):
+                            if np.random.random() < rate:
+                                self.kernel.push_input_spikes([int(start_id + idx)], self.kernel.current_time + t + 0.1)
+
+        # 2. カーネル実行
+        counts = self.kernel.run(duration=simulation_duration, learning_enabled=learning)
+        
+        # 3. 結果の集計
+        curr_spikes = {}
+        for name, (s, e) in self.group_indices.items():
+            spikes = torch.zeros(1, e-s, device=self.device)
+            for nid, count in counts.items():
+                if s <= nid < e and count > 0:
+                    spikes[0, nid-s] = count # スパイク回数を記録（強さになる）
+            curr_spikes[name] = spikes
+            
+        self.uncertainty_score = 0.0 # 簡易化
+        return {"spikes": curr_spikes}
+
+# -----------------------------------------------------------------------------
+
+class DORAOnlineLearnerV13:
     def __init__(self, n_hidden=1000, device='cpu'):
         self.device = torch.device(device)
         self.n_hidden = n_hidden
         
-        # タイムステップ設定
-        # 標準的なSNNパラメータに戻す
         self.config = {
             "dt": 1.0, 
-            "t_ref": 5.0,
-            "tau_m": 20.0,
+            "t_ref": 2.0,   # 不応期
+            "tau_m": 20.0,  # 膜時定数（標準的な減衰あり）
         }
-        self.brain = SpikingNeuralSubstrate(self.config, device=self.device)
+        # 拡張したSNNクラスを使用
+        self.brain = PoissonSNN(self.config, device=self.device)
         
         # 1. ニューロン定義
         self.brain.add_neuron_group("retina", 794, v_thresh=0.5)
-        
-        # 閾値 1.0
         self.brain.add_neuron_group("cortex", n_hidden, v_thresh=1.0)
         
         # 2. 接続構築
@@ -47,31 +91,25 @@ class DORAOnlineLearnerV10:
         n_input = retina_range[1] - retina_range[0]
         n_cortex = cortex_range[1] - cortex_range[0]
         
-        # 【修正1】重みの強化
-        # MNISTの有効画素数が150、密度10%なら、1ニューロンあたりの入力は約15個。
-        # 15個 × 0.08 = 1.2 > 閾値1.0
-        # これにより、画像入力だけで確実に発火する
-        weights = np.random.uniform(0.05, 0.10, (n_cortex, n_input))
+        # 重み設定: レートコーディング用
+        # 何度もスパイクが来るので、重みは小さくて良い
+        weights = np.random.uniform(0.02, 0.05, (n_cortex, n_input))
         
-        # ラベル部分: さらに強く (1発で発火に寄与)
+        # ラベルは強く (確実なガイド)
         label_start_idx = 784
         weights[:, label_start_idx:] = 2.0 
         
-        # 接続密度 (10%)
-        mask = (np.random.random(weights.shape) < 0.10).astype(float)
+        # 接続密度 (15%)
+        mask = (np.random.random(weights.shape) < 0.15).astype(float)
         weights *= mask
-        # ラベルは全結合
         weights[:, label_start_idx:] = 2.0
         
         self.brain.kernel.connect_groups(retina_range, cortex_range, weights)
         
-        # 【修正2】側抑制 (-1.0)
-        # 発火が強まるので、抑制も確実に効かせる
+        # 側抑制 (-1.0)
         inhibition_weights = -1.0 * np.ones((n_cortex, n_cortex))
         np.fill_diagonal(inhibition_weights, 0)
-        
-        # 抑制密度 (30%)
-        inhib_mask = (np.random.random(inhibition_weights.shape) < 0.30).astype(float)
+        inhib_mask = (np.random.random(inhibition_weights.shape) < 0.20).astype(float)
         inhibition_weights *= inhib_mask
         
         self.brain.kernel.connect_groups(cortex_range, cortex_range, inhibition_weights)
@@ -79,22 +117,22 @@ class DORAOnlineLearnerV10:
         self.brain._projections_registry["optic_nerve"] = {"source": "retina", "target": "cortex"}
         self.brain._projections_registry["lateral_inhibition"] = {"source": "cortex", "target": "cortex"}
         
+        # 構造的可塑性はオフ（安定化のため）
+        self.brain.kernel.structural_plasticity_enabled = False
+        
         # 3. OS起動
         self.os_kernel = NeuromorphicOS(self.brain, tick_rate=50)
         self.os_kernel.boot()
         
-        logger.info("🧠 Brain Initialized: High Gain & Sparse Mode (W~0.08).")
+        logger.info("🧠 Brain Initialized: Poisson Rate Coding Mode (Duration=50ms).")
 
     def overlay_label(self, image: torch.Tensor, label: int, use_correct: bool = True) -> torch.Tensor:
-        """入力の二値化のみ行う（値のブーストはしない）"""
-        flat_img = (image.view(-1) > 0.3).float()
-        
+        flat_img = torch.clamp(image.view(-1), 0, 1)
         if not use_correct:
             label_candidates = list(range(10))
             if label in label_candidates:
                 label_candidates.remove(label)
             label = np.random.choice(label_candidates)
-            
         label_vec = torch.zeros(10)
         label_vec[label] = 1.0 
         return torch.cat([flat_img, label_vec])
@@ -113,14 +151,16 @@ class DORAOnlineLearnerV10:
         return vals
 
     def run_plasticity(self, pos_spikes, neg_spikes, input_spikes):
-        """学習則"""
         cortex_range = self.brain.group_indices["cortex"]
         retina_range = self.brain.group_indices["retina"]
         
-        lr = 0.05 
-        weight_decay = 0.001 
+        lr = 0.01 # レートコーディングなので学習率は控えめに
+        weight_decay = 0.0005 
         
-        pre_indices = torch.nonzero(input_spikes.flatten() > 0).flatten().cpu().numpy()
+        # 入力スパイク数が多い順に処理（効率化）
+        input_vals = self._safe_numpy(input_spikes) # 今回はretinaのスパイク数
+        pre_indices = np.where(input_vals > 0)[0]
+        
         pos_vals = self._safe_numpy(pos_spikes)
         neg_vals = self._safe_numpy(neg_spikes)
         
@@ -130,11 +170,15 @@ class DORAOnlineLearnerV10:
         if len(active_post_indices) == 0:
             return 0
 
+        # ベクトル化したいが、SNNの構造上ループで処理
         for pre_idx_rel in pre_indices:
             pre_id = retina_range[0] + pre_idx_rel
             if pre_id >= len(self.brain.kernel.neurons): continue
             
             neuron = self.brain.kernel.neurons[pre_id]
+            
+            # 入力頻度に応じたスケーリング
+            rate_factor = min(1.0, input_vals[pre_idx_rel] / 5.0) 
             
             for synapse in neuron.outgoing_synapses:
                 if cortex_range[0] <= synapse.target_id < cortex_range[1]:
@@ -144,15 +188,14 @@ class DORAOnlineLearnerV10:
                         val_p = pos_vals[post_idx]
                         val_n = neg_vals[post_idx]
                         
-                        dw = lr * (val_p - val_n)
+                        # Forward-Forward則 (レートベース)
+                        # よく発火する入力に対して感度を上げる
+                        dw = lr * (val_p - val_n) * rate_factor
                         
                         synapse.weight += dw
                         synapse.weight -= weight_decay * synapse.weight
-                        
-                        # 重み制限: 2.0まで許容
-                        synapse.weight = max(0.001, min(2.0, synapse.weight))
+                        synapse.weight = max(0.001, min(1.0, synapse.weight))
                         updated_count += 1
-                        
         return updated_count
 
     def predict(self, img):
@@ -164,7 +207,8 @@ class DORAOnlineLearnerV10:
             in_data = self.overlay_label(img, l, True)
             self.brain.reset_state()
             
-            res = self.os_kernel.run_cycle({"retina": in_data})
+            # durationを引数で渡す (PoissonSNNで処理される)
+            res = self.os_kernel.run_cycle({"retina": in_data}, phase="wake") 
             g = self.get_goodness(res["spikes"]["cortex"])
             scores.append(g)
             
@@ -189,14 +233,15 @@ class DORAOnlineLearnerV10:
                 # --- Positive Phase ---
                 in_pos = self.overlay_label(img, lbl, True)
                 self.brain.reset_state()
-                res_pos = self.os_kernel.run_cycle({"retina": in_pos}, phase="wake")
+                # 50msかけてじっくり処理
+                res_pos = self.brain.forward_step({"retina": in_pos}, learning=True, duration=50.0)
                 spikes_pos = res_pos["spikes"]["cortex"]
-                input_spikes = res_pos["spikes"]["retina"]
+                input_spikes = res_pos["spikes"]["retina"] # retinaの発火数も返ってくる
                 
                 # --- Negative Phase ---
                 in_neg = self.overlay_label(img, lbl, False)
                 self.brain.reset_state()
-                res_neg = self.os_kernel.run_cycle({"retina": in_neg}, phase="dream")
+                res_neg = self.brain.forward_step({"retina": in_neg}, learning=True, duration=50.0)
                 spikes_neg = res_neg["spikes"]["cortex"]
 
                 # --- Learning ---
@@ -247,16 +292,16 @@ def main():
     ])
     dataset = datasets.MNIST('./workspace/data', train=True, download=True, transform=transform)
     
-    # 2000枚
-    train_subset = torch.utils.data.Subset(dataset, range(2000))
+    # 時間がかかるのでデータ数を減らす
+    train_subset = torch.utils.data.Subset(dataset, range(500))
     train_loader = torch.utils.data.DataLoader(train_subset, batch_size=1, shuffle=True)
     
-    test_subset = torch.utils.data.Subset(dataset, range(2000, 2050))
+    test_subset = torch.utils.data.Subset(dataset, range(500, 550))
     test_loader = torch.utils.data.DataLoader(test_subset, batch_size=1, shuffle=False)
     
-    learner = DORAOnlineLearnerV10(n_hidden=1000)
+    learner = DORAOnlineLearnerV13(n_hidden=1000)
     
-    logger.info("🚀 Starting DORA Online Learning (v10.0 High Gain)")
+    logger.info("🚀 Starting DORA Online Learning (v13.0 Poisson Rate Coding)")
     learner.train(train_loader, epochs=1)
     learner.evaluate(test_loader, limit=50)
 
