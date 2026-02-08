@@ -1,6 +1,6 @@
 # snn_research/core/snn_core.py
-# Title: Spiking Neural Substrate v3.12 (Universal Adapter & API Compat)
-# Description: VisualCortexやベンチマークスクリプトが依存する旧API(add_neuron_group等)を実装し、mypyエラーを解消。
+# Title: Spiking Neural Substrate v3.13 (OS Compatible)
+# Description: NeuromorphicOSとの互換性レイヤー(wake_up, process_step等)を追加し、AttributeErrorを解消。
 
 from __future__ import annotations
 import logging
@@ -27,16 +27,19 @@ class SpikingNeuralSubstrate(nn.Module):
         self.prev_spikes: Dict[str, Optional[Tensor]] = {}
         self.uncertainty_score = 0.0
         
+        # [OS Compatibility] State flags
+        self.is_awake = False
+        self.sleep_cycle_count = 0
+        
         # [Compatibility] For users accessing .neuron_groups or .projections directly
         self._projections_registry: Dict[str, Any] = {}
         
-        logger.info("⚡ SpikingNeuralSubstrate v3.12 (Universal Adapter) initialized.")
+        logger.info("⚡ SpikingNeuralSubstrate v3.13 (OS Compatible) initialized.")
 
     # --- API Compatibility Layer ---
     @property
     def neuron_groups(self) -> Dict[str, Any]:
         """旧API互換: グループ情報をDictとして返す"""
-        # Tensorとして誤判定されないよう、明示的にDictを返す
         return {name: {"range": r, "size": r[1]-r[0]} for name, r in self.group_indices.items()}
 
     @property
@@ -60,20 +63,53 @@ class SpikingNeuralSubstrate(nn.Module):
         src_size = src_range[1] - src_range[0]
         tgt_size = tgt_range[1] - tgt_range[0]
         
-        # ランダム重みで接続 (本来はweight引数を受け取るべきだが簡易化)
+        # ランダム重みで接続
         weight_matrix = torch.randn(src_size, tgt_size).numpy() * 0.1
         self.kernel.connect_groups(src_range, tgt_range, weight_matrix)
         self._projections_registry[name] = {"source": source, "target": target}
 
     def apply_plasticity_batch(self, firing_rates: Any, phase: str = "neutral") -> None:
-        """旧API互換: 可塑性適用のスタブ"""
-        # 実際の学習ロジックはKernel内にあるため、ここではログ出力のみでOKとするか、
-        # 必要であればKernelの学習メソッドを呼ぶ
         pass
 
     def get_total_spikes(self) -> int:
-        """旧API互換: 総スパイク数を返す"""
         return self.kernel.total_spike_count
+
+    # --- Neuromorphic OS Interface Methods (Added v3.13) ---
+    def wake_up(self):
+        """OSからの起動シグナル"""
+        self.is_awake = True
+        self.kernel.is_sleeping = False
+        logger.info("🧠 Brain Woke Up (Ready for Processing).")
+
+    def sleep(self):
+        """OSからの停止・睡眠シグナル"""
+        self.is_awake = False
+        self.kernel.is_sleeping = True
+        self.sleep_cycle_count += 1
+        self.sleep_process()
+        logger.info(f"🧠 Brain Entering Sleep Cycle #{self.sleep_cycle_count}.")
+
+    def process_step(self, task_input: Any) -> Dict[str, Any]:
+        """OSからのタスク実行要求 (forward_stepへのラッパー)"""
+        if isinstance(task_input, dict):
+            # 入力が辞書ならそのまま渡す (phaseなどはkwargsへ)
+            return self.forward_step(task_input)
+        else:
+            # 想定外の入力形式
+            return {"error": "Invalid input format"}
+
+    def process_tick(self, dt: float):
+        """OSのアイドルサイクル中に呼ばれるバックグラウンド処理"""
+        # 現在は特に何もしないが、恒常性維持などをここで行える
+        pass
+
+    def get_brain_status(self) -> Dict[str, Any]:
+        """OSへ状態を報告"""
+        return {
+            "is_awake": self.is_awake,
+            "uncertainty": self.uncertainty_score,
+            "total_spikes": self.get_total_spikes()
+        }
 
     # -------------------------------
 
@@ -83,7 +119,6 @@ class SpikingNeuralSubstrate(nn.Module):
         self.kernel = DORAKernel(dt=self.dt)
         self.group_indices = {}
         
-        # [Fix] Cast model to Any to avoid "Tensor | Module" attribute errors
         model_any: Any = model
         
         input_dim = getattr(model_any, 'dim', 128)
@@ -118,20 +153,14 @@ class SpikingNeuralSubstrate(nn.Module):
         self.prev_spikes[name] = torch.zeros(1, count, device=self.device)
 
     def forward(self, *args, **kwargs) -> Tensor:
-        """
-        [Universal Fix] 引数エラーを回避するための万能受け口。
-        """
         input_tensor = None
-        
         if args:
             for arg in args:
                 if isinstance(arg, torch.Tensor):
                     input_tensor = arg
                     break
-        
         if input_tensor is None:
             input_tensor = kwargs.get('input') or kwargs.get('x')
-
         if input_tensor is None:
             input_tensor = torch.zeros(1, 128, device=self.device)
 
@@ -149,10 +178,14 @@ class SpikingNeuralSubstrate(nn.Module):
             
         if out.dim() == 1:
             out = out.unsqueeze(0)
-            
         return out
 
     def forward_step(self, ext_inputs: Dict[str, Tensor], learning: bool = True, dreaming: bool = False, **kwargs: Any) -> Dict[str, Any]:
+        # kwargsからphase情報を取得し、dreamingフラグやlearningフラグを調整する拡張も可能
+        phase = kwargs.get("phase", "wake")
+        if phase == "dream":
+            dreaming = True
+        
         jitter = 0.1
         if not dreaming:
             for name, tensor in ext_inputs.items():
