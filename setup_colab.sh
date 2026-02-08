@@ -24,7 +24,7 @@ python -c "import snn_research; print(f'✅ SNN Research Library v{snn_research.
 python -c "import torch; print(f'✅ PyTorch v{torch.__version__} available.')"
 
 echo "📂 Creating workspace directories..."
-mkdir -p workspace/logs workspace/models workspace/data workspace/results
+mkdir -p workspace/logs models/checkpoints workspace/data workspace/results
 
 echo "✅ Setup Complete! You can now run the SNN CLI."
 echo "   Example: snn-cli --help"

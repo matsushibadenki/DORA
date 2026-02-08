@@ -31,7 +31,7 @@ def add_noise(img, noise_level=0.3):
 def run_demo():
     print("=== DORA Neuro-Symbolic Integration Demo (Fixed) ===")
     
-    model_path = "sara_mnist_v5.pth"
+    model_path = "models/checkpoints/sara_mnist_v5.pth"
     if not os.path.exists(model_path):
         print(f"Model {model_path} not found. Please run training first.")
         return

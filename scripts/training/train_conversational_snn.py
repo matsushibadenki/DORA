@@ -181,8 +181,8 @@ def main():
                 print(f"   Debug Gen: {gen}")
 
     # 保存
-    os.makedirs("workspace/models", exist_ok=True)
-    torch.save(model.state_dict(), "workspace/models/chat_snn.pth")
+    os.makedirs("models/checkpoints", exist_ok=True)
+    torch.save(model.state_dict(), "models/checkpoints/chat_snn.pth")
     logger.info("💾 Model saved.")
 
 if __name__ == "__main__":

@@ -137,7 +137,7 @@ def main():
         train(model, DEVICE, train_loader, optimizer, epoch)
         test(model, DEVICE, test_loader)
         
-    torch.save(model.state_dict(), "sara_mnist_v5.pth")
+    torch.save(model.state_dict(), "models/checkpoints/sara_mnist_v5.pth")
 
 if __name__ == "__main__":
     main()

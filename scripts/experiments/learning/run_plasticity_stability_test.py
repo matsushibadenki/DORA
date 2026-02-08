@@ -38,7 +38,7 @@ def evaluate_accuracy(agent, dataset, limit=1000):
 def run_test():
     print("=== SARA Stability-Plasticity Test ===")
     
-    model_path = "sara_mnist_v5.pth"
+    model_path = "models/checkpoints/sara_mnist_v5.pth"
     if not os.path.exists(model_path):
         print("Please train the model first.")
         return

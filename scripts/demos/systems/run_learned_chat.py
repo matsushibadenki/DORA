@@ -100,7 +100,7 @@ def run_chat():
     print("=========================================")
     
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    model_path = "workspace/models/chat_snn.pth"
+    model_path = "models/checkpoints/chat_snn.pth"
     
     if not os.path.exists(model_path):
         print("❌ Model not found! Run training first.")
