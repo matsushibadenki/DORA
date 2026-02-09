@@ -1,6 +1,8 @@
 # directory: tests/models/experimental
-# filename: test_sara_engine.py
-# description: SARAエンジンのユニットテスト (v7.4 Corrected Imports & Features)
+# file: test_sara_engine.py
+# purpose: Unit tests for SARA Engine v8.0
+# description: SARAEngineの初期化、順伝播、学習（適応）ステップをテストする。
+#              以前の SARABrainCore テストを SARAEngine に合わせてリファクタリング。
 
 import pytest
 import torch
@@ -10,78 +12,87 @@ import os
 # プロジェクトルートへのパス解決
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 
-# 正しいパスからのインポート
-from snn_research.models.experimental.sara_engine import (
-    SARABrainCore,
-    SARAEngine,
-    SNNEncoder,
-    LegendreSpikeAttractor,
-    RecursiveMeaningLayer,
-    RecursionController
-)
+from snn_research.models.experimental.sara_engine import SARAEngine, SARAMemory
+from snn_research.config.schema import SARAConfig
 
 class TestSARAEngine:
-    
     @pytest.fixture
     def config(self):
-        return {
-            "input_dim": 32,
-            "hidden_dim": 64,
-            "output_dim": 10,
-            "use_cuda": False,
-            "enable_rlm": True,
-            "enable_attractor": True
-        }
+        """テスト用の設定を作成"""
+        return SARAConfig(
+            hidden_size=64,
+            input_size=32,
+            plasticity_mode="surprise_modulated",
+            reasoning_depth=2,
+            use_world_model=True
+        )
 
-    def test_recursion_controller(self):
-        """再帰コントローラの動作テスト"""
-        dim = 16
-        controller = RecursionController(dim)
-        x = torch.randn(4, dim)
-        state = torch.randn(4, dim)
-        
-        out = controller(x, state)
-        assert out.shape == (4, dim)
-        # 出力が計算されているか（入力と異なるか）
-        assert not torch.equal(out, x)
+    @pytest.fixture
+    def engine(self, config):
+        """SARAEngineのインスタンスを作成"""
+        return SARAEngine(config)
 
-    def test_recursive_meaning_layer(self):
-        """再帰層の動作テスト"""
-        dim = 16
-        rml = RecursiveMeaningLayer(dim)
-        x = torch.randn(4, dim)
-        
-        out1, state1 = rml(x)
-        assert out1.shape == (4, dim)
-        
-        x2 = torch.randn(4, dim)
-        out2, state2 = rml(x2, prev_state=state1)
-        assert not torch.equal(state1, state2)
+    def test_initialization(self, engine):
+        """モデルが正しく初期化されるかテスト"""
+        assert isinstance(engine, SARAEngine)
+        assert engine.world_model is not None
+        assert engine.surprise_detector is not None
+        # Traceバッファの確認
+        assert hasattr(engine, 'spike_trace')
 
-    def test_encoder_and_core(self, config):
-        """統合テスト"""
-        model = SARABrainCore(**config)
-        batch_size = 2
-        x = torch.rand(batch_size, config["input_dim"])
+    def test_forward_pass(self, engine):
+        """順伝播の入出力形状確認"""
+        batch_size = 1
+        inputs = torch.randn(batch_size, 32)
+        outputs, memory = engine(inputs)
         
-        output, state = model(x)
-        assert output.shape == (batch_size, config["output_dim"])
+        # 出力チェック
+        assert outputs.shape == (batch_size, 32)
         
-    def test_synaptic_plasticity(self, config):
-        """RLM可塑性のテスト"""
-        model = SARABrainCore(**config)
-        x = torch.rand(2, config["input_dim"])
+        # メモリ状態チェック
+        assert isinstance(memory, SARAMemory)
+        assert memory.hidden_state.shape == (batch_size, 64)
+        assert memory.synaptic_trace.shape == (batch_size, 64)
+
+    def test_adaptation_step(self, engine):
+        """学習（適応）ステップの動作確認 (adaptメソッド)"""
+        inputs = torch.randn(1, 32)
         
-        out, _ = model(x)
-        loss = out.sum()
-        loss.backward()
+        # 実行 (adapt: 推論 + 誤差計算 + 重み更新)
+        results = engine.adapt(inputs)
         
-        w_before = model.readout.weight.data.clone()
-        model.apply_reward(1.0)
-        model.update_synapses()
-        w_after = model.readout.weight.data
+        # 結果のキー確認
+        assert "loss" in results
+        assert "surprise" in results
+        assert "memory" in results
+        assert "outputs" in results
         
-        assert not torch.equal(w_before, w_after)
+        # Surprise (予測誤差) が計算されているか
+        surprise = results["surprise"]
+        # shapeは (Batch, 1) または (Batch, 1)
+        assert surprise.numel() == 1 or surprise.shape[0] == 1
+        assert surprise.item() >= 0.0
+
+    def test_memory_continuity(self, engine):
+        """記憶（隠れ状態）が次のステップに引き継がれるか"""
+        inputs1 = torch.randn(1, 32)
+        _, mem1 = engine(inputs1)
+        
+        inputs2 = torch.randn(1, 32)
+        # 前のメモリを渡して次のステップを実行
+        _, mem2 = engine(inputs2, prev_memory=mem1)
+        
+        # 別のオブジェクトになっているはず
+        assert mem2 is not mem1
+        # World Modelの状態が更新されていること
+        assert mem2.world_model_state is not None
+
+    def test_batch_processing(self, engine):
+        """バッチ処理の確認"""
+        batch_size = 4
+        inputs = torch.randn(batch_size, 32)
+        outputs, _ = engine(inputs)
+        assert outputs.shape == (batch_size, 32)
 
 if __name__ == "__main__":
-    sys.exit(pytest.main(["-v", __file__]))
+    pytest.main([__file__])
