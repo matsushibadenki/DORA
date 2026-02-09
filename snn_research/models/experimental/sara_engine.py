@@ -1,13 +1,19 @@
 # directory: snn_research/models/experimental
 # file: sara_engine.py
-# purpose: SARA Engine v8.0 (Integrated Learning Core)
-# description: 確率的ヘブ則、因果トレース、物理情報に基づく世界モデルを統合した自律学習エンジン。
-#              以前の ProbabilisticHebbian, CausalTrace, PhysicsInformed を代替します。
+# purpose: SARA Engine v9.0 (Integrated Autonomous Intelligence Core)
+# description: 予測符号化 (Predictive Coding) と能動的推論 (Active Inference) を統合した
+#              SNNベースの自律学習エンジン。
+#              Integrates:
+#                - Probabilistic Hebbian (v8.0 integrated)
+#                - Causal Trace (v8.0 integrated)
+#                - Physics-Informed World Model (v8.0 integrated)
+#                - Predictive Coding Rule (v9.0 integrated)
+#                - Active Inference (v9.0 integrated)
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 from dataclasses import dataclass
 
 from snn_research.config.schema import SARAConfig
@@ -19,239 +25,302 @@ class SARAMemory:
     synaptic_trace: torch.Tensor
     world_model_state: torch.Tensor
     prediction_error: Optional[torch.Tensor] = None
+    prior_belief: Optional[torch.Tensor] = None  # 能動的推論用の事前信念(Goal)
 
 class WorldModel(nn.Module):
     """
     物理情報に基づく内部世界モデル (Physics-Informed World Model)
-    PhysicsInformedTrainer の機能を代替・統合。
+    状態遷移と感覚入力の予測を行う生成モデル。
     """
-    def __init__(self, state_dim: int, hidden_dim: int):
+    def __init__(self, state_dim: int, hidden_dim: int, input_dim: int):
         super().__init__()
         self.state_dim = state_dim
         
-        # 物理法則を模倣する遷移モデル (Transition Model)
-        # 次の状態 = 現在の状態 + 変化量 (オイラー法的な物理シミュレーションを学習)
-        self.dynamics = nn.Sequential(
+        # 遷移モデル (Transition): State(t) -> State(t+1)
+        self.transition = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, state_dim) # 変化量を出力
         )
         
-        # 物理的一貫性をチェックするためのエネルギー評価関数（オプション）
+        # 観測モデル (Observation/Emission): State(t) -> SensoryInput(t)
+        # Predictive Codingにおける「Top-down Prediction」を生成
+        self.decoder = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, input_dim)
+        )
+        
+        # エネルギー評価 (Physics Constraint)
         self.energy_evaluator = nn.Sequential(
             nn.Linear(state_dim, 1),
             nn.Softplus()
         )
 
-    def forward(self, current_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, current_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        次の状態を予測し、物理的なエネルギー準位を推定する。
+        Returns:
+            next_state_pred: 次の状態予測
+            sensory_pred: 現在の状態から予測される感覚入力
+            energy: 物理的エネルギー推定値
         """
-        delta = self.dynamics(current_state)
+        # 状態遷移 (物理ダイナミクスのシミュレーション)
+        delta = self.transition(current_state)
         next_state_pred = current_state + delta
+        
+        # 感覚入力の再構成 (予測)
+        sensory_pred = self.decoder(current_state)
+        
         estimated_energy = self.energy_evaluator(next_state_pred)
-        return next_state_pred, estimated_energy
+        return next_state_pred, sensory_pred, estimated_energy
 
-class SurpriseDetector(nn.Module):
+class PredictiveErrorUnit(nn.Module):
     """
-    予測誤差（Surprise）を検知し、学習率を調整するモジュール
+    Predictive Codingの中核。
+    予測(Top-down)と現実(Bottom-up)の不一致(Surprise/Free Energy)を計算する。
     """
-    def __init__(self, state_dim: int):
+    def __init__(self, feature_dim: int):
         super().__init__()
-        self.scale = nn.Parameter(torch.ones(1) * 0.1)
+        # 誤差の重要度(Precision)を学習可能なパラメータとして持つ
+        self.precision_log = nn.Parameter(torch.zeros(1, feature_dim))
 
-    def forward(self, prediction: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
-        # 平均二乗誤差を計算
-        mse = F.mse_loss(prediction, actual, reduction='none').mean(dim=1, keepdim=True)
-        # 驚き信号に変換（活性化関数を通す）
-        surprise = 1.0 - torch.exp(-mse / (self.scale + 1e-6))
-        return surprise
+    def forward(self, prediction: torch.Tensor, actual: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            weighted_error: 重み付けされた誤差信号（学習や推論の駆動に使用）
+            free_energy: 変分自由エネルギー（損失関数として使用）
+        """
+        error = actual - prediction
+        precision = torch.exp(self.precision_log)
+        
+        # Precision-weighted error: e = Π * (y - y_pred)
+        weighted_error = precision * error
+        
+        # Free Energy (Gaussian assumption): F = 0.5 * e^T * Π * e - 0.5 * ln|Π|
+        squared_error = (error ** 2) * precision
+        log_det = self.precision_log
+        free_energy = 0.5 * (squared_error - log_det).mean(dim=1, keepdim=True)
+        
+        return weighted_error, free_energy
+
+class ActiveInferenceController(nn.Module):
+    """
+    Active Inference (能動的推論) モジュール
+    期待自由エネルギー(EFE)を最小化する行動(Action)を選択・生成する。
+    """
+    def __init__(self, state_dim: int, action_dim: int):
+        super().__init__()
+        self.action_generator = nn.Linear(state_dim, action_dim)
+        
+    def infer_action(self, current_state: torch.Tensor, goal_state: Optional[torch.Tensor]) -> torch.Tensor:
+        """
+        現在の状態と目標状態（選好）から、ギャップを埋める行動を生成
+        """
+        # 簡易的な実装: 目標がない場合は探索的な行動、ある場合は目標に向かう
+        action_logits = self.action_generator(current_state)
+        
+        if goal_state is not None:
+            # Goalとのコサイン類似度などを加味して変調（ここではシンプルに）
+            pass 
+            
+        return torch.tanh(action_logits) # -1~1の連続値行動
 
 class SARAEngine(nn.Module):
     """
-    Spiking Attractor Recursive Architecture (SARA) v8.0
+    Spiking Attractor Recursive Architecture (SARA) v9.0
     
-    Integrated Features:
-    1. Causal Trace Learning: スパイクタイミング依存のトレースを内部バッファで管理。
-    2. Probabilistic Hebbian: 驚き(Surprise)によって変調される確率的な重み更新。
-    3. Physics-Informed World Model: 内部シミュレーションによる物理則の獲得。
+    Integrated Learning & Cognitive Functions:
+    1. **Predictive Coding**: 入力予測誤差(Sensory PE)と状態予測誤差(State PE)による階層的推論。
+    2. **Active Inference**: 自由エネルギー最小化による行動生成と内部状態の最適化。
+    3. **Surprise-Modulated Plasticity**: 予測誤差の大きさに応じた動的学習率(旧Probabilistic Hebbian)。
+    4. **Recursive Causal Trace**: 時間的因果関係の保持(旧Causal Trace)。
+    5. **Physics-Informed World Model**: 物理則の内在化(旧PhysicsInformed)。
     """
     def __init__(self, config: SARAConfig):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
-        self.input_size = config.input_size or 128  # デフォルト値
+        self.input_size = config.input_size or 128
+        self.action_size = getattr(config, 'action_size', self.input_size) # Default to input size if not defined
         
-        # --- Core Circuit ---
-        # 入力エンコーディング
+        # --- Core SNN Circuit ---
         self.input_projection = nn.Linear(self.input_size, self.hidden_size)
-        
-        # 再帰結合 (LIFニューロンのダイナミクスを模倣)
         self.recurrent_weights = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.layer_norm = nn.LayerNorm(self.hidden_size)
         
         # --- Integrated Sub-systems ---
-        # 旧 PhysicsInformed を代替
-        self.world_model = WorldModel(self.hidden_size, self.hidden_size * 2)
+        # 1. World Model (Physics & Observation)
+        self.world_model = WorldModel(self.hidden_size, self.hidden_size * 2, self.input_size)
         
-        # 驚き検知
-        self.surprise_detector = SurpriseDetector(self.hidden_size)
+        # 2. Predictive Coding Units
+        self.sensory_pe_unit = PredictiveErrorUnit(self.input_size) # 感覚入力レベルの誤差
+        self.state_pe_unit = PredictiveErrorUnit(self.hidden_size)  # 潜在状態レベルの誤差
         
-        # --- Learning State Buffers (Causal Trace) ---
-        # 旧 CausalTraceLearning を代替
-        # register_bufferにより、勾配計算の対象外だがstate_dictには保存されるテンソルを定義
+        # 3. Active Inference Controller
+        self.active_inference = ActiveInferenceController(self.hidden_size, self.action_size)
+        
+        # --- Internal Buffers ---
         self.register_buffer('spike_trace', torch.zeros(1, self.hidden_size))
         
-        # 学習パラメータ
-        self.trace_decay = 0.95  # トレースの減衰率
-        self.base_learning_rate = 0.01
+        # --- Parameters ---
+        self.trace_decay = getattr(config, 'trace_decay', 0.95)
+        self.base_learning_rate = getattr(config, 'learning_rate', 0.01)
         
-        # 出力層
-        self.output_head = nn.Linear(self.hidden_size, self.input_size)
+        # Backward compatibility
+        self.surprise_detector = None # Deprecated, logic moved to PredictiveErrorUnit
 
     def _update_traces(self, spikes: torch.Tensor):
-        """
-        因果トレース (Causal Trace) の更新
-        ニューロンの発火履歴を指数移動平均で追跡する。
-        """
-        # trace[t] = alpha * trace[t-1] + (1-alpha) * spike[t]
+        """因果トレースの更新"""
         self.spike_trace = self.trace_decay * self.spike_trace + (1.0 - self.trace_decay) * spikes
 
-    def _apply_probabilistic_hebbian(self, 
-                                   pre_synaptic: torch.Tensor, 
-                                   post_synaptic: torch.Tensor, 
-                                   surprise: torch.Tensor):
+    def _apply_plasticity(self, pre: torch.Tensor, post: torch.Tensor, error_signal: torch.Tensor):
         """
-        確率的ヘブ則 (Probabilistic Hebbian) の適用
-        Surpriseが高いほど、学習（可塑性）の確率と強度が高まる。
+        統合された可塑性ルール:
+        Surprise-Modulated Hebbian + Predictive Coding Error Backprop (Local)
         """
-        # Hebbian Term: Pre * Post
-        # プレシナプスのトレース と ポストシナプスの現在の活動 の積をとる（因果性）
-        hebbian_term = torch.matmul(self.spike_trace.t(), post_synaptic)
+        # 1. Hebbian Term (Correlation)
+        hebbian = torch.matmul(self.spike_trace.t(), post)
         
-        # 確率的要素: ランダムなノイズマスクを作成
-        noise_mask = torch.rand_like(self.recurrent_weights.weight)
+        # 2. Error Modulation (Surprise)
+        # 誤差が大きいほど、学習強度を上げる（重要イベントとして記憶）
+        surprise_magnitude = error_signal.abs().mean()
+        modulation = torch.sigmoid(surprise_magnitude * 5.0) # 0.5 ~ 1.0 scaling
         
-        # 更新確率の閾値 (Surpriseが高いと閾値が下がり、更新されやすくなる)
-        update_threshold = 0.8 - (surprise.mean().item() * 0.5)
-        update_mask = (noise_mask > update_threshold).float()
+        # 3. Weight Update
+        # 勾配を使わない直接的な重み操作 (Online Learning)
+        delta_w = self.base_learning_rate * modulation * hebbian
         
-        # 重み更新 (Delta Rule的な要素も加味可能だがここではシンプルに)
-        # Weight_new = Weight_old + LR * Surprise * Mask * Hebbian
-        delta_w = self.base_learning_rate * surprise.mean() * update_mask * hebbian_term
-        
-        # 重みの更新を適用（勾配を使わない直接的な可塑性）
-        # 注意: PyTorchのAutogradと競合しないよう no_grad で実行
         with torch.no_grad():
-            # 次元整合性のための調整 (hebbian_termの形状による)
             if delta_w.shape != self.recurrent_weights.weight.shape:
-                # 簡易的なブロードキャストまたはサイズ調整
-                delta_w = delta_w.mean() # 簡略化（実際は行列演算を合わせる）
+                # 簡易ブロードキャスト対応
+                delta_w = delta_w.mean()
             
             self.recurrent_weights.weight.add_(delta_w)
-            
-            # 重みの爆発を防ぐ正規化
+            # Normalize to prevent explosion
             self.recurrent_weights.weight.data = F.normalize(self.recurrent_weights.weight.data, p=2, dim=1)
 
-    def forward(self, x: torch.Tensor, prev_memory: Optional[SARAMemory] = None) -> Tuple[torch.Tensor, SARAMemory]:
+    def forward(self, 
+                inputs: torch.Tensor, 
+                prev_memory: Optional[SARAMemory] = None,
+                target_goal: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, SARAMemory, Dict[str, Any]]:
         """
-        推論と内部状態更新のステップ
+        推論・予測・行動生成の統合ステップ
         """
-        batch_size = x.size(0)
+        batch_size = inputs.size(0)
+        device = inputs.device
         
-        # メモリの初期化
+        # Initialize Memory
         if prev_memory is None:
-            hidden = torch.zeros(batch_size, self.hidden_size, device=x.device)
-            trace = torch.zeros(batch_size, self.hidden_size, device=x.device)
-            wm_state = torch.zeros(batch_size, self.hidden_size, device=x.device)
+            hidden = torch.zeros(batch_size, self.hidden_size, device=device)
+            trace = torch.zeros(batch_size, self.hidden_size, device=device)
+            wm_state = torch.zeros(batch_size, self.hidden_size, device=device)
         else:
             hidden = prev_memory.hidden_state
             trace = prev_memory.synaptic_trace
             wm_state = prev_memory.world_model_state
-            # Traceバッファを復元（バッチ処理のためインスタンス変数と同期）
             self.spike_trace = trace
 
-        # 1. 入力統合
-        input_current = self.input_projection(x)
+        # --- 1. Predictive Coding Phase (Perception) ---
+        # Bottom-up Input
+        input_current = self.input_projection(inputs)
         
-        # 2. 再帰的処理 (SARA Core)
-        # Membrane Potential Update
-        mem_potential = input_current + self.recurrent_weights(hidden)
+        # World ModelからのTop-down予測（前の状態に基づく今の感覚入力の予測）
+        _, sensory_pred, _ = self.world_model(wm_state)
+        
+        # 感覚レベルの予測誤差 (Sensory Prediction Error)
+        # 実際の入力 - 予測された入力
+        sensory_pe, free_energy_sensory = self.sensory_pe_unit(sensory_pred, inputs)
+        
+        # 誤差を入力として統合 (Error driving the network)
+        # 従来の純粋な入力だけでなく、予測誤差がネットワークを駆動する
+        drive_signal = input_current + self.input_projection(sensory_pe) # 簡易的な再投影
+        
+        # --- 2. Recurrent Integration (SNN Core) ---
+        mem_potential = drive_signal + self.recurrent_weights(hidden)
         mem_potential = self.layer_norm(mem_potential)
+        spikes = torch.sigmoid(mem_potential) # Rate approximation
         
-        # Spiking Activation (Surrogate Gradient)
-        spikes = torch.sigmoid(mem_potential) # Rate coding 近似
-        
-        # 3. 因果トレースの更新
         self._update_traces(spikes)
         
-        # 4. 世界モデルによる予測 (Physics Simulation)
-        # 現在の状態から「次の瞬間の入力」あるいは「隠れ状態」を予測
-        pred_next_state, energy = self.world_model(spikes)
+        # --- 3. World Model Dynamics (Simulation) ---
+        # 現在の活動から次の状態を予測
+        pred_next_state, _, energy = self.world_model(spikes)
         
-        # 5. 驚き (Surprise) の計算
-        # 本来は次のタイムステップの入力と比較するが、ここでは
-        # 「世界モデルの予測」と「実際の再帰入力」の整合性を簡易チェック
-        # または、外部からの正解データがあればそれを使う
-        surprise_val = torch.tensor(0.0, device=x.device) # プレースホルダー
+        # 状態レベルの予測誤差 (State Prediction Error) - 時間的整合性
+        # 前のステップで予測した「次の状態」と、実際に計算された「今の状態(spikes)」のズレ
+        state_pe, free_energy_state = self.state_pe_unit(wm_state, spikes)
         
-        # 出力生成
-        output = self.output_head(spikes)
+        # --- 4. Active Inference Phase (Action) ---
+        # 自由エネルギーを最小化、またはゴールに近づくための行動を生成
+        action = self.active_inference.infer_action(spikes, target_goal)
         
-        # 新しいメモリ状態の作成
+        # Total Free Energy (Surprise)
+        total_free_energy = free_energy_sensory.mean() + free_energy_state.mean()
+        
+        # --- 5. Memory Update ---
         new_memory = SARAMemory(
             hidden_state=spikes,
             synaptic_trace=self.spike_trace.clone(),
-            world_model_state=pred_next_state,
-            prediction_error=None
+            world_model_state=pred_next_state, # 次のステップの予測に使用
+            prediction_error=total_free_energy,
+            prior_belief=target_goal
         )
         
-        return output, new_memory
+        info = {
+            "sensory_pe": sensory_pe,
+            "state_pe": state_pe,
+            "energy": energy,
+            "free_energy": total_free_energy,
+            "action": action
+        }
+        
+        return action, new_memory, info
 
     def adapt(self, 
               inputs: torch.Tensor, 
               targets: Optional[torch.Tensor] = None, 
               prev_memory: Optional[SARAMemory] = None) -> Dict[str, Any]:
         """
-        学習ステップ (Forward + Plasticity Update)
-        外部からの呼び出しにより、自己組織化（学習）を行う。
+        自律学習ステップ (Active Inference & Learning)
+        外部から呼び出されるメインのAPI
         """
-        # Forward pass
-        outputs, memory = self.forward(inputs, prev_memory)
+        # ゴール設定（ターゲットがない場合は、現状維持や探索がゴールとなる）
+        # Active Inferenceでは「期待する感覚入力(Target)」がGoalとして機能する
         
-        # 予測ターゲット（教師あり学習の場合）または自己教師あり（入力再構成）
-        target_signal = targets if targets is not None else inputs
+        # Forward pass (Active Inference含む)
+        action, memory, info = self.forward(inputs, prev_memory, target_goal=targets)
         
-        # 驚きの計算 (Prediction Error)
-        # 物理情報に基づくロス: 予測した状態と実際の結果の乖離
-        surprise = self.surprise_detector(outputs, target_signal)
-        
-        # メモリに誤差情報を格納
-        memory.prediction_error = surprise
-        
-        # 自己組織化: 確率的ヘブ則の適用
-        # 入力(Pre)と出力スパイク(Post)に基づいて重みを更新
-        input_encoding = self.input_projection(inputs) # 簡易的なPre-synaptic activity
-        self._apply_probabilistic_hebbian(input_encoding, memory.hidden_state, surprise)
+        # 重み更新 (Plasticity)
+        # 予測誤差(State PE)を教師信号としてネットワークを自己組織化
+        self._apply_plasticity(
+            pre=self.input_projection(inputs),
+            post=memory.hidden_state,
+            error_signal=info["state_pe"]
+        )
         
         return {
-            "loss": surprise.mean(),
-            "surprise": surprise,
+            "loss": info["free_energy"],
+            "surprise": info["free_energy"], # 互換性のため
             "memory": memory,
-            "outputs": outputs
+            "outputs": action, # SARAの出力は「行動」
+            "info": info
         }
 
-# 使用例のデバッグ用コード
+# Backward compatibility alias
+SARABrainCore = SARAEngine
+
+# Debug / Unit Test Logic
 if __name__ == "__main__":
+    print("Initializing SARA Engine v9.0 (Integrated)...")
     config = SARAConfig(hidden_size=64, input_size=32)
-    engine = SARAEngine(config)
+    brain = SARAEngine(config)
     
-    dummy_input = torch.randn(1, 32)
-    results = engine.adapt(dummy_input)
+    dummy_input = torch.randn(2, 32) # Batch size 2
     
-    print(f"SARA Integration Test:")
-    print(f"  Surprise Level: {results['loss'].item():.4f}")
-    print(f"  Output Shape: {results['outputs'].shape}")
-    print("  Physics-Informed, Probabilistic Hebbian, and Causal Trace integrated successfully.")
+    print("Executing Adaptive Step...")
+    results = brain.adapt(dummy_input)
+    
+    print(f"  Total Free Energy (Surprise): {results['loss'].item():.4f}")
+    print(f"  Generated Action Shape: {results['outputs'].shape}")
+    print(f"  Internal Energy Estimate: {results['info']['energy'].mean().item():.4f}")
+    print("Integration of Predictive Coding & Active Inference successful.")

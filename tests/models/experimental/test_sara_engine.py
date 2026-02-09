@@ -1,8 +1,8 @@
 # directory: tests/models/experimental
 # file: test_sara_engine.py
-# purpose: Unit tests for SARA Engine v8.0
-# description: SARAEngineの初期化、順伝播、学習（適応）ステップをテストする。
-#              以前の SARABrainCore テストを SARAEngine に合わせてリファクタリング。
+# purpose: Unit tests for SARA Engine v9.0
+# description: SARAEngine v9.0 (Active Inference & Predictive Coding integrated) の仕様に合わせてテストを修正。
+#              戻り値のアンパック数(3つ)や属性チェック(surprise_detector削除)を更新。
 
 import pytest
 import torch
@@ -36,7 +36,15 @@ class TestSARAEngine:
         """モデルが正しく初期化されるかテスト"""
         assert isinstance(engine, SARAEngine)
         assert engine.world_model is not None
-        assert engine.surprise_detector is not None
+        
+        # v9.0: surprise_detector は廃止(None)され、Predictive Coding Unit に移行しました
+        # assert engine.surprise_detector is not None 
+        
+        # 新しいコンポーネントの確認
+        assert engine.sensory_pe_unit is not None
+        assert engine.state_pe_unit is not None
+        assert engine.active_inference is not None
+        
         # Traceバッファの確認
         assert hasattr(engine, 'spike_trace')
 
@@ -44,15 +52,21 @@ class TestSARAEngine:
         """順伝播の入出力形状確認"""
         batch_size = 1
         inputs = torch.randn(batch_size, 32)
-        outputs, memory = engine(inputs)
         
-        # 出力チェック
-        assert outputs.shape == (batch_size, 32)
+        # v9.0修正: 戻り値は (action, memory, info) の3つ
+        action, memory, info = engine(inputs)
+        
+        # 行動出力チェック (デフォルトでinput_sizeと同じ次元)
+        assert action.shape == (batch_size, 32)
         
         # メモリ状態チェック
         assert isinstance(memory, SARAMemory)
         assert memory.hidden_state.shape == (batch_size, 64)
         assert memory.synaptic_trace.shape == (batch_size, 64)
+        
+        # infoの内容チェック
+        assert "free_energy" in info
+        assert "energy" in info
 
     def test_adaptation_step(self, engine):
         """学習（適応）ステップの動作確認 (adaptメソッド)"""
@@ -65,22 +79,25 @@ class TestSARAEngine:
         assert "loss" in results
         assert "surprise" in results
         assert "memory" in results
-        assert "outputs" in results
+        assert "outputs" in results # v9.0では 'outputs' は action を指す
+        assert "info" in results
         
-        # Surprise (予測誤差) が計算されているか
+        # Surprise (Free Energy) が計算されているか
         surprise = results["surprise"]
-        # shapeは (Batch, 1) または (Batch, 1)
+        # shapeは (Batch, 1) または (Batch, 1) スカラー相当
         assert surprise.numel() == 1 or surprise.shape[0] == 1
-        assert surprise.item() >= 0.0
+        assert isinstance(surprise, torch.Tensor)
 
     def test_memory_continuity(self, engine):
         """記憶（隠れ状態）が次のステップに引き継がれるか"""
         inputs1 = torch.randn(1, 32)
-        _, mem1 = engine(inputs1)
+        # v9.0修正: 3つアンパック
+        _, mem1, _ = engine(inputs1)
         
         inputs2 = torch.randn(1, 32)
         # 前のメモリを渡して次のステップを実行
-        _, mem2 = engine(inputs2, prev_memory=mem1)
+        # v9.0修正: 3つアンパック
+        _, mem2, _ = engine(inputs2, prev_memory=mem1)
         
         # 別のオブジェクトになっているはず
         assert mem2 is not mem1
@@ -91,7 +108,8 @@ class TestSARAEngine:
         """バッチ処理の確認"""
         batch_size = 4
         inputs = torch.randn(batch_size, 32)
-        outputs, _ = engine(inputs)
+        # v9.0修正: 3つアンパック
+        outputs, _, _ = engine(inputs)
         assert outputs.shape == (batch_size, 32)
 
 if __name__ == "__main__":

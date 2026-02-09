@@ -1,7 +1,20 @@
-# ファイルパス: snn_research/adaptive/__init__.py
-# Title: 適応学習パッケージ
-# Description: 推論時適応(TTA)や高速適応モードなど、動的な適応機能を提供するモジュール。
+# directory: snn_research/adaptive
+# file: __init__.py
+# purpose: Adaptive module exports
+# description: 適応型学習モジュールの公開インターフェース
 
-from .test_time_adaptation import TestTimeAdaptationWrapper, FastAdaptationTrainer
+from .active_inference_agent import ActiveInferenceAgent
+from .intrinsic_motivator import IntrinsicMotivator
+from .on_chip_self_corrector import OnChipSelfCorrector
+from .test_time_adaptation import TimeAdaptationWrapper
 
-__all__ = ["TestTimeAdaptationWrapper", "FastAdaptationTrainer"]
+# Backward compatibility alias (if needed temporarily)
+TestTimeAdaptationWrapper = TimeAdaptationWrapper 
+
+__all__ = [
+    "ActiveInferenceAgent",
+    "IntrinsicMotivator",
+    "OnChipSelfCorrector",
+    "TimeAdaptationWrapper",
+    "TestTimeAdaptationWrapper" # Export alias
+]

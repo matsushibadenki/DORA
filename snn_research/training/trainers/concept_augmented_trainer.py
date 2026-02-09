@@ -1,27 +1,45 @@
-# snn_research/training/trainers/concept_augmented_trainer.py
+# directory: snn_research/training/trainers
+# file: concept_augmented_trainer.py
+# purpose: Concept Augmented Trainer
+# description: 概念学習を強化するためのトレーナー。
+#              PhysicsInformedTrainer への依存を削除。
+
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, cast
-# Use the correct new class name to avoid import errors
-from snn_research.training.base_trainer import AbstractTrainer
+from typing import Dict, Any, Optional
 
-class ConceptAugmentedTrainer(AbstractTrainer):
+# Deprecated import removed:
+# from snn_research.training.trainers.physics_informed import PhysicsInformedTrainer
+
+class ConceptAugmentedTrainer:
     """
-    Trainer enhanced with Concept-based regularization and augmentation.
+    Trainer that incorporates conceptual understanding objectives.
     """
-    def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, 
-                 scheduler: Any, device: str, rank: int = -1, **kwargs):
-        super().__init__(model=model, optimizer=optimizer, scheduler=scheduler, device=device, **kwargs)
+    def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, config: Any):
+        self.model = model
+        self.optimizer = optimizer
+        self.config = config
         
-        self.trainable_model = cast(nn.Module, self.model)
+    def train_step(self, inputs: torch.Tensor, concepts: torch.Tensor) -> Dict[str, float]:
+        """
+        Training step with concept alignment.
+        """
+        self.optimizer.zero_grad()
         
-        learning_rate = kwargs.get("learning_rate", 1e-3)
-        if self.optimizer is None:
-             self.optimizer = torch.optim.Adam(self.trainable_model.parameters(), lr=learning_rate)
-
-    def train_epoch(self, train_loader: Any) -> Dict[str, float]:
-        # Placeholder for actual training logic
-        return {"loss": 0.1, "concept_acc": 0.95}
-
-    def validate(self, val_loader: Any) -> Dict[str, float]:
-        return {"val_loss": 0.1}
+        # Forward pass
+        # Assume model returns (output, concept_embedding)
+        outputs = self.model(inputs)
+        
+        # Simplified logic: If model returns tuple, extract concept part
+        if isinstance(outputs, tuple):
+            pred_concepts = outputs[1]
+        else:
+            pred_concepts = outputs # Fallback
+            
+        # Concept Alignment Loss (e.g., Cosine Similarity or MSE)
+        loss = nn.functional.mse_loss(pred_concepts, concepts)
+        
+        loss.backward()
+        self.optimizer.step()
+        
+        return {"loss": loss.item()}
