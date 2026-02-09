@@ -1,116 +1,120 @@
 # directory: tests/models/experimental
 # file: test_sara_engine.py
-# purpose: Unit tests for SARA Engine v9.0
-# description: SARAEngine v9.0 (Active Inference & Predictive Coding integrated) の仕様に合わせてテストを修正。
-#              戻り値のアンパック数(3つ)や属性チェック(surprise_detector削除)を更新。
+# purpose: Unit tests for SARA Engine v10.0
+# description: SARAEngine v10.0 (Active Inference & Predictive Coding integrated) の仕様に合わせてテストを修正。
 
 import pytest
 import torch
-import sys
-import os
-
-# プロジェクトルートへのパス解決
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
-
+import torch.nn as nn
 from snn_research.models.experimental.sara_engine import SARAEngine, SARAMemory
-from snn_research.config.schema import SARAConfig
+
+# テスト用の簡易Configクラス
+class SARAConfig:
+    def __init__(self, hidden_size, input_size, **kwargs):
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.physics = {}
+        self.__dict__.update(kwargs)
 
 class TestSARAEngine:
+    
     @pytest.fixture
     def config(self):
-        """テスト用の設定を作成"""
         return SARAConfig(
-            hidden_size=64,
-            input_size=32,
-            plasticity_mode="surprise_modulated",
-            reasoning_depth=2,
-            use_world_model=True
+            hidden_size=64, 
+            input_size=32, 
+            plasticity_mode='surprise_modulated', 
+            reasoning_depth=2, 
+            use_world_model=True, 
+            learning_rate=0.01, 
+            trace_decay=0.95, 
+            world_model_hidden_dim=256, 
+            surprise_scale=0.1
         )
 
     @pytest.fixture
     def engine(self, config):
         """SARAEngineのインスタンスを作成"""
-        return SARAEngine(config)
+        action_dim = 4 # テスト用にアクション次元を定義
+        
+        # SARAEngine v10.0 のシグネチャに合わせて修正
+        return SARAEngine(
+            input_dim=config.input_size,
+            hidden_dim=config.hidden_size,
+            action_dim=action_dim,
+            config=config.__dict__
+        )
 
     def test_initialization(self, engine):
-        """モデルが正しく初期化されるかテスト"""
         assert isinstance(engine, SARAEngine)
-        assert engine.world_model is not None
-        
-        # v9.0: surprise_detector は廃止(None)され、Predictive Coding Unit に移行しました
-        # assert engine.surprise_detector is not None 
-        
-        # 新しいコンポーネントの確認
-        assert engine.sensory_pe_unit is not None
-        assert engine.state_pe_unit is not None
-        assert engine.active_inference is not None
-        
-        # Traceバッファの確認
-        assert hasattr(engine, 'spike_trace')
+        assert engine.input_dim == 32
+        assert engine.hidden_dim == 64
+        assert engine.action_dim == 4
+        # コンポーネントの存在確認
+        assert hasattr(engine, 'perception_core')
+        assert hasattr(engine, 'action_generator')
+        assert hasattr(engine, 'memory')
 
     def test_forward_pass(self, engine):
-        """順伝播の入出力形状確認"""
-        batch_size = 1
-        inputs = torch.randn(batch_size, 32)
+        batch_size = 4
+        # (Batch, Input)
+        sensory_input = torch.randn(batch_size, engine.input_dim)
+        # (Batch, Action) - 前回の行動
+        prev_action = torch.zeros(batch_size, engine.action_dim)
         
-        # v9.0修正: 戻り値は (action, memory, info) の3つ
-        action, memory, info = engine(inputs)
+        # 初期状態
+        prev_state = engine.get_initial_state(batch_size, torch.device("cpu"))
         
-        # 行動出力チェック (デフォルトでinput_sizeと同じ次元)
-        assert action.shape == (batch_size, 32)
+        # Forward実行
+        output = engine(sensory_input, prev_action, prev_state)
         
-        # メモリ状態チェック
-        assert isinstance(memory, SARAMemory)
-        assert memory.hidden_state.shape == (batch_size, 64)
-        assert memory.synaptic_trace.shape == (batch_size, 64)
+        # 出力キーの確認
+        assert "action" in output
+        assert "next_state" in output
+        assert "pred_sensory" in output
+        assert "loss_components" in output
         
-        # infoの内容チェック
-        assert "free_energy" in info
-        assert "energy" in info
+        # シェイプ確認
+        assert output["action"].shape == (batch_size, engine.action_dim)
+        assert output["pred_sensory"].shape == (batch_size, engine.input_dim)
 
     def test_adaptation_step(self, engine):
-        """学習（適応）ステップの動作確認 (adaptメソッド)"""
-        inputs = torch.randn(1, 32)
+        """可塑性とエネルギーの更新確認"""
+        batch_size = 2
+        sensory = torch.randn(batch_size, engine.input_dim)
+        prev_action = torch.randn(batch_size, engine.action_dim)
+        state = engine.get_initial_state(batch_size, torch.device("cpu"))
         
-        # 実行 (adapt: 推論 + 誤差計算 + 重み更新)
-        results = engine.adapt(inputs)
+        # 実行前のパラメータ状態
+        initial_plasticity = engine.plasticity_level.item()
         
-        # 結果のキー確認
-        assert "loss" in results
-        assert "surprise" in results
-        assert "memory" in results
-        assert "outputs" in results # v9.0では 'outputs' は action を指す
-        assert "info" in results
+        # 大きな誤差を生む入力で実行
+        output = engine(sensory, prev_action, state)
         
-        # Surprise (Free Energy) が計算されているか
-        surprise = results["surprise"]
-        # shapeは (Batch, 1) または (Batch, 1) スカラー相当
-        assert surprise.numel() == 1 or surprise.shape[0] == 1
-        assert isinstance(surprise, torch.Tensor)
+        # 可塑性が変化しているか (メタ認知による調整)
+        assert engine.plasticity_level.item() != initial_plasticity or engine.energy_reserve.item() < 1.0
 
     def test_memory_continuity(self, engine):
-        """記憶（隠れ状態）が次のステップに引き継がれるか"""
-        inputs1 = torch.randn(1, 32)
-        # v9.0修正: 3つアンパック
-        _, mem1, _ = engine(inputs1)
+        """メモリと状態の連続性テスト"""
+        batch_size = 1
+        sensory = torch.randn(batch_size, engine.input_dim)
+        prev_action = torch.zeros(batch_size, engine.action_dim)
+        state = engine.get_initial_state(batch_size, torch.device("cpu"))
         
-        inputs2 = torch.randn(1, 32)
-        # 前のメモリを渡して次のステップを実行
-        # v9.0修正: 3つアンパック
-        _, mem2, _ = engine(inputs2, prev_memory=mem1)
+        # Step 1
+        out1 = engine(sensory, prev_action, state)
+        state2 = out1["next_state"]
         
-        # 別のオブジェクトになっているはず
-        assert mem2 is not mem1
-        # World Modelの状態が更新されていること
-        assert mem2.world_model_state is not None
+        # Step 2
+        out2 = engine(sensory, out1["action"], state2)
+        
+        assert out2["action"].shape == (batch_size, engine.action_dim)
 
     def test_batch_processing(self, engine):
-        """バッチ処理の確認"""
-        batch_size = 4
-        inputs = torch.randn(batch_size, 32)
-        # v9.0修正: 3つアンパック
-        outputs, _, _ = engine(inputs)
-        assert outputs.shape == (batch_size, 32)
-
-if __name__ == "__main__":
-    pytest.main([__file__])
+        batch_size = 8
+        sensory = torch.randn(batch_size, engine.input_dim)
+        prev_action = torch.zeros(batch_size, engine.action_dim)
+        state = engine.get_initial_state(batch_size, torch.device("cpu"))
+        
+        output = engine(sensory, prev_action, state)
+        assert output["action"].shape[0] == batch_size

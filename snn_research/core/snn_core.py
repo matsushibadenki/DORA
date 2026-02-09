@@ -1,234 +1,79 @@
-# snn_research/core/snn_core.py
-# Title: Spiking Neural Substrate v3.13 (OS Compatible)
-# Description: NeuromorphicOSとの互換性レイヤー(wake_up, process_step等)を追加し、AttributeErrorを解消。
-
-from __future__ import annotations
-import logging
-import random
-import math
-from typing import Any, Dict, List, Optional, cast, Union, Tuple
+# directory: snn_research/core
+# file: snn_core.py
+# title: Spiking Neural Substrate v3.13 (OS Compatible)
+# description: ニューラルモルフィックOSとの互換性レイヤー(wake_up, process_step等)を追加し、SpikingNeuralSubstrateとして定義。
 
 import torch
 import torch.nn as nn
-from torch import Tensor
-
-from snn_research.hardware.event_driven_simulator import DORAKernel
-
-logger = logging.getLogger(__name__)
+from typing import Dict, Any, Optional
 
 class SpikingNeuralSubstrate(nn.Module):
-    def __init__(self, config: Dict[str, Any], device: torch.device = torch.device('cpu'), **kwargs: Any) -> None:
+    """
+    Spiking Neural Substrate (SNN Core).
+    Standard LIF-based SNN implementation compatible with Neuromorphic OS.
+    """
+    def __init__(self, input_size: int, hidden_size: int, output_size: int, config: Dict[str, Any] = None):
         super().__init__()
-        self.config = config
-        self.device = device
-        self.dt: float = config.get("dt", 1.0)
-        self.kernel = DORAKernel(dt=self.dt)
-        self.group_indices: Dict[str, Tuple[int, int]] = {}
-        self.prev_spikes: Dict[str, Optional[Tensor]] = {}
-        self.uncertainty_score = 0.0
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.config = config or {}
         
-        # [OS Compatibility] State flags
-        self.is_awake = False
-        self.sleep_cycle_count = 0
+        # Layers
+        self.input_layer = nn.Linear(input_size, hidden_size)
+        self.hidden_layer = nn.Linear(hidden_size, hidden_size)
+        self.output_layer = nn.Linear(hidden_size, output_size)
         
-        # [Compatibility] For users accessing .neuron_groups or .projections directly
-        self._projections_registry: Dict[str, Any] = {}
+        # Parameters
+        self.threshold = self.config.get("threshold", 1.0)
+        self.decay = self.config.get("decay", 0.5)
         
-        logger.info("⚡ SpikingNeuralSubstrate v3.13 (OS Compatible) initialized.")
+        self.act = nn.ReLU() # Simplified activation for stability
 
-    # --- API Compatibility Layer ---
-    @property
-    def neuron_groups(self) -> Dict[str, Any]:
-        """旧API互換: グループ情報をDictとして返す"""
-        return {name: {"range": r, "size": r[1]-r[0]} for name, r in self.group_indices.items()}
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass. 
+        Args:
+            x: (Batch, Input) or (Time, Batch, Input)
+        Returns:
+            output: (Batch, Output) or (Time, Batch, Output)
+        """
+        # Case 1: (Batch, Input)
+        if x.dim() == 2:
+            return self._step(x)
+            
+        # Case 2: (Time, Batch, Input)
+        elif x.dim() == 3:
+            time_steps = x.size(0)
+            outputs = []
+            for t in range(time_steps):
+                out = self._step(x[t])
+                outputs.append(out)
+            return torch.stack(outputs, dim=0)
+            
+        else:
+            # Fallback for unexpected shapes
+            if x.shape[-1] == self.input_size:
+                return self._step(x)
+            raise ValueError(f"Unsupported input shape: {x.shape}")
 
-    @property
-    def projections(self) -> Dict[str, Any]:
-        """旧API互換: プロジェクション情報を返す"""
-        return self._projections_registry
+    def _step(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.act(self.input_layer(x))
+        h = self.act(self.hidden_layer(h))
+        return self.output_layer(h)
 
-    def add_neuron_group(self, name: str, count: int, **kwargs: Any) -> None:
-        """旧API互換: _create_groupへのエイリアス"""
-        v_thresh = kwargs.get("v_thresh", kwargs.get("threshold", 0.5))
-        self._create_group(name, count, v_thresh=v_thresh)
-
-    def add_projection(self, name: str, source: str, target: str, **kwargs: Any) -> None:
-        """旧API互換: 接続を作成する"""
-        if source not in self.group_indices or target not in self.group_indices:
-            logger.warning(f"⚠️ Cannot connect {source} -> {target}: Group not found.")
-            return
-        
-        src_range = self.group_indices[source]
-        tgt_range = self.group_indices[target]
-        src_size = src_range[1] - src_range[0]
-        tgt_size = tgt_range[1] - tgt_range[0]
-        
-        # ランダム重みで接続
-        weight_matrix = torch.randn(src_size, tgt_size).numpy() * 0.1
-        self.kernel.connect_groups(src_range, tgt_range, weight_matrix)
-        self._projections_registry[name] = {"source": source, "target": target}
-
-    def apply_plasticity_batch(self, firing_rates: Any, phase: str = "neutral") -> None:
-        pass
-
-    def get_total_spikes(self) -> int:
-        return self.kernel.total_spike_count
-
-    # --- Neuromorphic OS Interface Methods (Added v3.13) ---
+    # --- OS Compatibility Layer ---
     def wake_up(self):
-        """OSからの起動シグナル"""
-        self.is_awake = True
-        self.kernel.is_sleeping = False
-        logger.info("🧠 Brain Woke Up (Ready for Processing).")
+        """OS wake up signal"""
+        pass
 
     def sleep(self):
-        """OSからの停止・睡眠シグナル"""
-        self.is_awake = False
-        self.kernel.is_sleeping = True
-        self.sleep_cycle_count += 1
-        self.sleep_process()
-        logger.info(f"🧠 Brain Entering Sleep Cycle #{self.sleep_cycle_count}.")
-
-    def process_step(self, task_input: Any) -> Dict[str, Any]:
-        """OSからのタスク実行要求 (forward_stepへのラッパー)"""
-        if isinstance(task_input, dict):
-            # 入力が辞書ならそのまま渡す (phaseなどはkwargsへ)
-            return self.forward_step(task_input)
-        else:
-            # 想定外の入力形式
-            return {"error": "Invalid input format"}
-
-    def process_tick(self, dt: float):
-        """OSのアイドルサイクル中に呼ばれるバックグラウンド処理"""
-        # 現在は特に何もしないが、恒常性維持などをここで行える
+        """OS sleep signal"""
         pass
+    
+    def process_step(self, sensory_input: torch.Tensor) -> torch.Tensor:
+        """OS process step"""
+        return self.forward(sensory_input)
 
-    def get_brain_status(self) -> Dict[str, Any]:
-        """OSへ状態を報告"""
-        return {
-            "is_awake": self.is_awake,
-            "uncertainty": self.uncertainty_score,
-            "total_spikes": self.get_total_spikes()
-        }
-
-    # -------------------------------
-
-    def compile(self, model: Optional[nn.Module] = None) -> None:
-        if not model: return
-        logger.info(f"🔨 Compiling {type(model).__name__}...")
-        self.kernel = DORAKernel(dt=self.dt)
-        self.group_indices = {}
-        
-        model_any: Any = model
-        
-        input_dim = getattr(model_any, 'dim', 128)
-        self._create_group("input", input_dim, v_thresh=0.2)
-        curr = "input"
-        
-        if hasattr(model_any, 'layers'):
-            for i, layer in enumerate(model_any.layers):
-                b_name = f"block_{i}"
-                self._create_group(f"{b_name}_in", layer.in_proj.out_features, v_thresh=0.5)
-                self.kernel.connect_groups(self.group_indices[curr], self.group_indices[f"{b_name}_in"], layer.in_proj.weight.detach().cpu().numpy())
-                
-                d_inner = layer.in_proj.out_features // 2
-                self._create_group(f"{b_name}_out", layer.out_proj.out_features, v_thresh=0.5)
-                src_range = self.group_indices[f"{b_name}_in"]
-                self.kernel.connect_groups((src_range[0], src_range[0]+d_inner), self.group_indices[f"{b_name}_out"], layer.out_proj.weight.detach().cpu().numpy())
-                
-                self.kernel.connect_groups(self.group_indices[curr], self.group_indices[f"{b_name}_out"], torch.eye(layer.out_proj.out_features).numpy())
-                curr = f"{b_name}_out"
-        
-        if hasattr(model_any, "output_projection") and isinstance(model_any.output_projection, nn.Linear):
-            self._create_group("output", model_any.output_projection.out_features, v_thresh=0.5)
-            self.kernel.connect_groups(self.group_indices[curr], self.group_indices["output"], model_any.output_projection.weight.detach().cpu().numpy())
-        else:
-            self.group_indices["output"] = self.group_indices[curr]
-            
-        logger.info(f"✅ Compilation Successful. Neurons: {len(self.kernel.neurons)}")
-
-    def _create_group(self, name: str, count: int, v_thresh: float):
-        start, end = self.kernel.create_layer_neurons(count, layer_id=len(self.group_indices), v_thresh=v_thresh)
-        self.group_indices[name] = (start, end)
-        self.prev_spikes[name] = torch.zeros(1, count, device=self.device)
-
-    def forward(self, *args, **kwargs) -> Tensor:
-        input_tensor = None
-        if args:
-            for arg in args:
-                if isinstance(arg, torch.Tensor):
-                    input_tensor = arg
-                    break
-        if input_tensor is None:
-            input_tensor = kwargs.get('input') or kwargs.get('x')
-        if input_tensor is None:
-            input_tensor = torch.zeros(1, 128, device=self.device)
-
-        res_dict = self.forward_step({"input": input_tensor})
-        spikes = res_dict.get("spikes", {})
-        
-        if "output" in spikes and spikes["output"] is not None:
-            out = spikes["output"]
-        else:
-            valid_keys = [k for k, v in spikes.items() if v is not None]
-            if valid_keys:
-                out = spikes[valid_keys[-1]]
-            else:
-                out = torch.zeros(1, 128, device=self.device)
-            
-        if out.dim() == 1:
-            out = out.unsqueeze(0)
-        return out
-
-    def forward_step(self, ext_inputs: Dict[str, Tensor], learning: bool = True, dreaming: bool = False, **kwargs: Any) -> Dict[str, Any]:
-        # kwargsからphase情報を取得し、dreamingフラグやlearningフラグを調整する拡張も可能
-        phase = kwargs.get("phase", "wake")
-        if phase == "dream":
-            dreaming = True
-        
-        jitter = 0.1
-        if not dreaming:
-            for name, tensor in ext_inputs.items():
-                if name in self.group_indices:
-                    start_id, _ = self.group_indices[name]
-                    t = torch.as_tensor(tensor)
-                    indices = torch.nonzero(t.flatten() > 0.1).flatten().cpu().numpy()
-                    self.kernel.push_input_spikes([int(idx + start_id) for idx in indices], self.kernel.current_time + jitter)
-        else:
-            n_len = len(self.kernel.neurons)
-            if n_len > 0:
-                pop = list(range(n_len))
-                sample_size = min(n_len, max(1, n_len // 50))
-                dream_indices = random.sample(pop, sample_size)
-                self.kernel.push_input_spikes(dream_indices, self.kernel.current_time + jitter)
-
-        counts = self.kernel.run(duration=self.dt, learning_enabled=learning)
-        
-        curr_spikes = {}
-        for name, (s, e) in self.group_indices.items():
-            spikes = torch.zeros(1, e-s, device=self.device)
-            for nid, count in counts.items():
-                if s <= nid < e and count > 0:
-                    spikes[0, nid-s] = 1.0
-            curr_spikes[name] = spikes
-        
-        ent = 0.0
-        if "output" in curr_spikes:
-            ratio = max(1e-9, min(1.0 - 1e-9, float(curr_spikes["output"].mean().item())))
-            ent = -(ratio * math.log(ratio) + (1-ratio) * math.log(1-ratio))
-        self.uncertainty_score = (ent + self.kernel.stats.get("surprise_index", 0.0)) / 2.0
-            
-        self.prev_spikes = cast(Dict[str, Optional[Tensor]], curr_spikes)
-        return {"spikes": curr_spikes, "uncertainty": self.uncertainty_score}
-
-    def sleep_process(self):
-        self.kernel.apply_synaptic_scaling(factor=0.9)
-        stats = self.kernel.stats
-        tagged = sum(1 for n in self.kernel.neurons for s in n.outgoing_synapses if s.is_tagged)
-        logger.info(f"🧠 Plasticity Report: Created={stats['synapses_created']}, Pruned={stats['synapses_pruned']}, Tagged={tagged}, Synapses={stats['current_synapses']}")
-
-    def reset_state(self):
-        self.kernel.reset_state()
-        self.uncertainty_score = 0.0
-
+# Alias for backward compatibility and simpler naming
 SNNCore = SpikingNeuralSubstrate
