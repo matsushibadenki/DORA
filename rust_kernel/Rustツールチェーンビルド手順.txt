@@ -15,3 +15,11 @@ cd rust_kernel
 maturin develop --release
 python -c "import dora_kernel; print('Success! Kernel loaded.')"
 cd ..
+
+
+
+----
+テスト
+PYTHONPATH=. python tests/models/experimental/train_sara_mnist.py
+テスト2
+PYTHONPATH=. python tests/learning_rules/test_rust_stdp_benchmark.py

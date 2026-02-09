@@ -1,22 +1,18 @@
 # directory: rust_kernel
 # file: Cargo.toml
-# purpose: Rustカーネルの依存関係定義 (Fix: Enable ndarray rayon feature)
+# purpose: Rustカーネルの依存関係定義。Python連携と並列数値計算用クレートを追加。
 
 [package]
 name = "dora_kernel"
 version = "0.1.0"
 edition = "2021"
 
-# Python拡張モジュールとしてビルドするための設定
 [lib]
 name = "dora_kernel"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Python連携
-pyo3 = { version = "0.20.0", features = ["extension-module"] }
-numpy = "0.20.0"
-
-# 高速数値計算 (ここで features = ["rayon"] を指定するのが必須です)
-ndarray = { version = "0.15.6", features = ["rayon"] }
-rayon = "1.8.0"
+pyo3 = { version = "0.20", features = ["extension-module"] }
+ndarray = { version = "0.15", features = ["rayon"] } # 並列化機能を有効化
+numpy = "0.20"
+rayon = "1.8"

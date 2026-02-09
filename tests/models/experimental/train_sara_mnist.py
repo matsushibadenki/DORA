@@ -1,143 +1,135 @@
-# directory: scripts/experiments/experimental
+# directory: tests/models/experimental
 # file: train_sara_mnist.py
-# purpose: SARA v5.0 Hybrid Training Script
+# title: Train SARA Engine on MNIST
+# description: ログ設定に force=True を追加し、Rustカーネルの読み込みメッセージを確実に表示するように修正。
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-import sys
-import os
+import logging
 from tqdm import tqdm
 
-# パス設定
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
-try:
-    from snn_research.models.experimental.sara_engine import SARAEngine
-except ImportError:
-    sys.path.append(".")
-    from snn_research.models.experimental.sara_engine import SARAEngine
+# --- 修正: force=True を追加して既存の設定を上書き ---
+# これにより、PyTorch等が勝手に行ったログ設定をリセットし、INFOログを表示させます。
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', force=True)
+logger = logging.getLogger(__name__)
+# -------------------------------------------------------
 
-def generate_negative_samples(x):
-    """
-    ネガティブサンプルの生成
-    バッチ内の画像をランダムにシャッフルし、強いノイズを加える
-    """
-    batch_size = x.size(0)
-    # ランダムシャッフル（ラベルと画像の関係を破壊）
-    idx = torch.randperm(batch_size)
-    x_shuffled = x[idx]
-    
-    # ノイズ付加
-    noise = torch.randn_like(x) * 0.5
-    x_neg = x_shuffled + noise
-    return x_neg
-
-def train(model, device, train_loader, optimizer, epoch):
-    model.train()
-    
-    correct = 0
-    total = 0
-    running_ce_loss = 0.0
-    running_ff_loss = 0.0
-    avg_rate = 0.0
-    
-    # FFロスの重み（補助的な役割）
-    ff_coeff = 0.5
-    
-    pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
-    for batch_idx, (data, target) in enumerate(pbar):
-        data, target = data.to(device), target.to(device)
-        x_pos = data.view(data.size(0), -1)
-        x_neg = generate_negative_samples(x_pos).to(device)
-        
-        optimizer.zero_grad()
-        
-        # 1. Main Forward (Classification)
-        logits, rate, _ = model(x_pos)
-        ce_loss = F.cross_entropy(logits, target)
-        
-        # 2. Forward-Forward Loss (Auxiliary)
-        ff_loss = model.compute_ff_loss(x_pos, x_neg)
-        
-        # Hybrid Loss
-        loss = ce_loss + ff_coeff * ff_loss
-        
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        
-        # Stats
-        running_ce_loss += ce_loss.item()
-        running_ff_loss += ff_loss.item()
-        avg_rate = 0.9 * avg_rate + 0.1 * rate
-        
-        pred = logits.argmax(dim=1, keepdim=True)
-        correct += pred.eq(target.view_as(pred)).sum().item()
-        total += data.size(0)
-        
-        pbar.set_postfix({
-            'CE': f"{ce_loss.item():.3f}", 
-            'FF': f"{ff_loss.item():.3f}",
-            'Acc': f"{100. * correct / total:.1f}%",
-            'Rate': f"{avg_rate:.3f}"
-        })
-
-def test(model, device, test_loader):
-    model.eval()
-    test_loss = 0
-    correct = 0
-    
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            x = data.view(data.size(0), -1)
-            
-            logits, _, _ = model(x)
-            test_loss += F.cross_entropy(logits, target, reduction='sum').item()
-            pred = logits.argmax(dim=1, keepdim=True)
-            correct += pred.eq(target.view_as(pred)).sum().item()
-
-    test_loss /= len(test_loader.dataset)
-    acc = 100. * correct / len(test_loader.dataset)
-    print(f'\nTest set: Avg. loss: {test_loss:.4f}, Accuracy: {acc:.2f}%\n')
+from snn_research.models.experimental.sara_engine import SARAEngine
 
 def main():
+    # 1. Device Configuration
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    logger.info(f"Using device: {device}")
+
+    # 2. Hyperparameters
     BATCH_SIZE = 64
-    EPOCHS = 5
-    LR = 1e-3
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    print(f"Using device: {DEVICE}")
-    
+    EPOCHS = 3
+    HIDDEN_DIM = 128
+    ACTION_DIM = 10 
+    LEARNING_RATE = 1e-3
+
+    # 3. Data Loading (MNIST)
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
-    
-    train_ds = datasets.MNIST('../data', train=True, download=True, transform=transform)
-    test_ds = datasets.MNIST('../data', train=False, transform=transform)
-    
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
-    
-    # v5.0 Model
-    model = SARAEngine(
-        input_dim=784,
-        n_encode_neurons=128,
-        d_legendre=64,
-        d_meaning=128,
-        n_output=10
-    ).to(DEVICE)
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    
-    for epoch in range(1, EPOCHS + 1):
-        train(model, DEVICE, train_loader, optimizer, epoch)
-        test(model, DEVICE, test_loader)
-        
-    torch.save(model.state_dict(), "models/checkpoints/sara_mnist_v5.pth")
 
-if __name__ == "__main__":
+    train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+    test_dataset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    # 4. Model Initialization
+    input_dim = 28 * 28 
+    
+    config = {
+        "use_vision": True,
+        "physics": {
+            "smoothness_weight": 0.1
+        }
+    }
+
+    model = SARAEngine(
+        input_dim=input_dim,
+        hidden_dim=HIDDEN_DIM,
+        action_dim=ACTION_DIM,
+        config=config
+    ).to(device)
+
+    # 5. Optimizer
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+    # 6. Training Loop
+    logger.info("Starting training...")
+    
+    for epoch in range(EPOCHS):
+        model.train()
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+        for batch_idx, (data, target) in enumerate(pbar):
+            data, target = data.to(device), target.to(device)
+            batch_size = data.size(0)
+            flat_input = data.view(batch_size, -1)
+            
+            state = model.get_initial_state(batch_size, device)
+            prev_action = torch.zeros(batch_size, ACTION_DIM, device=device)
+            
+            optimizer.zero_grad()
+            
+            output = model(flat_input, prev_action, state)
+            action = output["action"]
+            
+            class_loss = nn.functional.cross_entropy(action * 5.0, target)
+            internal_loss = sum(output["loss_components"].values())
+            
+            loss = class_loss + 0.1 * internal_loss
+            
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            pred = action.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+            total += batch_size
+            
+            pbar.set_postfix({
+                "Loss": f"{loss.item():.4f}", 
+                "Acc": f"{100. * correct / total:.2f}%",
+                "Surprise": f"{output['meta_info']['surprise']:.4f}"
+            })
+
+    # 7. Evaluation
+    logger.info("Evaluating...")
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            batch_size = data.size(0)
+            flat_input = data.view(batch_size, -1)
+            state = model.get_initial_state(batch_size, device)
+            prev_action = torch.zeros(batch_size, ACTION_DIM, device=device)
+            
+            output = model(flat_input, prev_action, state)
+            action = output["action"]
+            
+            test_loss += nn.functional.cross_entropy(action * 5.0, target).item()
+            pred = action.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+
+    test_loss /= len(test_loader.dataset)
+    acc = 100. * correct / len(test_loader.dataset)
+    logger.info(f"\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({acc:.2f}%)")
+
+if __name__ == '__main__':
     main()

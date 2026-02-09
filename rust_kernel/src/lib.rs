@@ -1,117 +1,112 @@
 // directory: rust_kernel/src
 // file: lib.rs
-// purpose: Rustカーネル v2.1 (Fix: Import Syntax & Full Parallelism)
+// title: DORA Kernel (Rust Backend)
+// description: LIFニューロン計算に加え、STDP学習則の高速計算ロジックを追加。
 
 use pyo3::prelude::*;
-use numpy::{PyReadonlyArray2, PyReadonlyArray3, PyReadwriteArray2, ToPyArray};
-use ndarray::{Array2, Array3, Axis, Zip};
-use rayon::prelude::*; // Fixed: used '::' instead of '.'
+use ndarray::prelude::*;
+use ndarray::Zip;
+use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 
-/// LIFニューロンの並列更新カーネル
+/// LIF Neuron update step
 #[pyfunction]
-fn update_lif_neurons<'py>(
+fn lif_update_step<'py>(
     py: Python<'py>,
-    mut v: PyReadwriteArray2<f32>,
-    current: PyReadonlyArray2<f32>,
-    tau: f32,
-    v_th: f32,
-    dt: f32
-) -> &'py pyo3::types::PyAny {
-    let mut v_array = v.as_array_mut();
-    let current_array = current.as_array();
-    let mut spikes = Array2::<f32>::zeros(v_array.raw_dim());
-    
-    // ndarrayの並列イテレータ
-    Zip::from(&mut v_array)
-        .and(&current_array)
+    input_current: PyReadonlyArray2<f32>,
+    prev_mem: PyReadonlyArray2<f32>,
+    decay: f32,
+    threshold: f32,
+) -> PyResult<(&'py PyArray2<f32>, &'py PyArray2<f32>)> {
+    let input = input_current.as_array();
+    let prev = prev_mem.as_array();
+    let shape = input.raw_dim();
+    let mut spikes = Array2::<f32>::zeros(shape);
+    let mut new_mem = Array2::<f32>::zeros(shape);
+
+    Zip::from(&mut new_mem)
         .and(&mut spikes)
-        .par_for_each(|v_val, &i_val, s_val| {
-            let decay = dt / tau;
-            *v_val = *v_val * (1.0 - decay) + i_val * decay;
-            if *v_val >= v_th {
-                *s_val = 1.0;
-                *v_val = 0.0;
-            } else {
-                *s_val = 0.0;
-            }
+        .and(&input)
+        .and(&prev)
+        .par_for_each(|mem_out, spike_out, &inp, &p_mem| {
+            let v = p_mem * decay + inp;
+            let s = if v >= threshold { 1.0 } else { 0.0 };
+            *mem_out = v - (s * threshold);
+            *spike_out = s;
         });
-    spikes.to_pyarray(py).into()
+
+    Ok((
+        spikes.into_pyarray(py),
+        new_mem.into_pyarray(py),
+    ))
 }
 
-/// Mamba Selective Scan (Batch Parallel)
-/// 3次元配列 (Batch, Time, Dim) を受け取り、Batch次元を並列処理する
+/// STDP Weight Update Step
+/// 
+/// Python側からの入力:
+///     weights: (Out, In) 現在の重み
+///     pre_trace: (Batch, In) 前ニューロンのトレース
+///     post_trace: (Batch, Out) 後ニューロンのトレース
+///     pre_spikes: (Batch, In) 前ニューロンのスパイク
+///     post_spikes: (Batch, Out) 後ニューロンのスパイク
+///     ...params...
+///
+/// 戻り値:
+///     new_weights: (Out, In) 更新後の重み
 #[pyfunction]
-fn fast_selective_scan<'py>(
+#[allow(clippy::too_many_arguments)]
+fn stdp_weight_update<'py>(
     py: Python<'py>,
-    u: PyReadonlyArray3<f32>,      // (Batch, L, D)
-    delta: PyReadonlyArray3<f32>,  // (Batch, L, D)
-    A: PyReadonlyArray2<f32>,      // (D, N) - Shared across batch
-    B: PyReadonlyArray3<f32>,      // (Batch, L, N)
-    C: PyReadonlyArray3<f32>,      // (Batch, L, N)
-) -> &'py pyo3::types::PyAny {
-    
-    let u_arr = u.as_array();
-    let dt_arr = delta.as_array();
-    let a_arr = A.as_array();
-    let b_arr = B.as_array();
-    let c_arr = C.as_array();
-    
-    let (batch_size, len_seq, dim_d) = u_arr.dim();
-    let dim_n = a_arr.shape()[1];
-    
-    // Rayonによるバッチ並列化
-    // 各バッチの計算結果をVec<Array2>として集める
-    let output_vec: Vec<Array2<f32>> = (0..batch_size).into_par_iter().map(|b_idx| {
-        // バッチ b_idx の処理 (ここは個別のスレッドで走る)
-        let mut y_local = Array2::<f32>::zeros((len_seq, dim_d));
-        let mut h = Array2::<f32>::zeros((dim_d, dim_n));
-        
-        let u_b = u_arr.index_axis(Axis(0), b_idx);     // (L, D)
-        let dt_b = dt_arr.index_axis(Axis(0), b_idx);   // (L, D)
-        let b_b = b_arr.index_axis(Axis(0), b_idx);     // (L, N)
-        let c_b = c_arr.index_axis(Axis(0), b_idx);     // (L, N)
-        
-        for t in 0..len_seq {
-            let u_t = u_b.row(t);
-            let dt_t = dt_b.row(t);
-            let b_t = b_b.row(t);
-            let c_t = c_b.row(t);
-            let mut y_t = y_local.row_mut(t);
-            
-            for d in 0..dim_d {
-                let dt_val = dt_t[d];
-                let u_val = u_t[d];
-                let mut sum_y = 0.0;
-                
-                for n in 0..dim_n {
-                    // Mamba Discretization & State Update
-                    let da = (a_arr[[d, n]] * dt_val).exp();
-                    let db = dt_val * b_t[n];
-                    
-                    let prev_h = h[[d, n]];
-                    let new_h = da * prev_h + db * u_val;
-                    h[[d, n]] = new_h;
-                    
-                    sum_y += new_h * c_t[n];
-                }
-                y_t[d] = sum_y;
-            }
-        }
-        y_local
-    }).collect();
+    weights: PyReadonlyArray2<f32>,
+    pre_trace: PyReadonlyArray2<f32>,
+    post_trace: PyReadonlyArray2<f32>,
+    pre_spikes: PyReadonlyArray2<f32>,
+    post_spikes: PyReadonlyArray2<f32>,
+    learning_rate: f32,
+    a_plus: f32,
+    a_minus: f32,
+    w_min: f32,
+    w_max: f32,
+) -> PyResult<&'py PyArray2<f32>> {
+    let w = weights.as_array();
+    let x_trace = pre_trace.as_array();   // (B, In)
+    let y_trace = post_trace.as_array();  // (B, Out)
+    let x_spike = pre_spikes.as_array();  // (B, In)
+    let y_spike = post_spikes.as_array(); // (B, Out)
 
-    // 結果の結合: Vec<Array2> -> Array3
-    let mut y_final = Array3::<f32>::zeros((batch_size, len_seq, dim_d));
-    for (b, y_res) in output_vec.into_iter().enumerate() {
-        y_final.index_axis_mut(Axis(0), b).assign(&y_res);
-    }
-    
-    y_final.to_pyarray(py).into()
+    let batch_size = x_trace.shape()[0] as f32;
+
+    // 1. Calculate Delta W terms via Matrix Multiplication
+    // LTP Term: Y_spike^T (Out, B) @ X_trace (B, In) -> (Out, In)
+    let dw_plus = y_spike.t().dot(&x_trace);
+
+    // LTD Term: Y_trace^T (Out, B) @ X_spike (B, In) -> (Out, In)
+    let dw_minus = y_trace.t().dot(&x_spike);
+
+    // 2. Compute New Weights (Parallelized element-wise op)
+    let mut new_w = Array2::<f32>::zeros(w.raw_dim());
+
+    Zip::from(&mut new_w)
+        .and(&w)
+        .and(&dw_plus)
+        .and(&dw_minus)
+        .par_for_each(|nw, &cw, &p, &m| {
+            // dW = (A+ * dW+ - A- * dW-) / Batch
+            let delta = (a_plus * p - a_minus * m) / batch_size;
+            
+            // W_new = clamp(W + lr * delta)
+            let updated = cw + learning_rate * delta;
+            
+            // Clamp
+            *nw = updated.max(w_min).min(w_max);
+        });
+
+    Ok(new_w.into_pyarray(py))
 }
 
+/// DORA Kernel Module Definition
 #[pymodule]
 fn dora_kernel(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(update_lif_neurons, m)?)?;
-    m.add_function(wrap_pyfunction!(fast_selective_scan, m)?)?;
+    m.add_function(wrap_pyfunction!(lif_update_step, m)?)?;
+    m.add_function(wrap_pyfunction!(stdp_weight_update, m)?)?;
     Ok(())
 }

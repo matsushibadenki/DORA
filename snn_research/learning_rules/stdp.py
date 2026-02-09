@@ -1,95 +1,126 @@
-# ファイルパス: snn_research/learning_rules/stdp.py
-# 日本語タイトル: STDP Learning Rule Module (Fixed)
-# 目的・内容:
-#   スパイクタイミング依存可塑性 (STDP) および報酬変調型STDP (R-STDP) の実装。
-#   MyPyエラー修正: updateシグネチャの整合性確保、STDPエイリアスの追加。
-
-from typing import Any, Dict, Optional, Tuple
+# directory: snn_research/learning_rules
+# file: stdp.py
+# title: STDP (Rust-Accelerated)
+# description: Rustカーネルを用いた高速STDP実装。利用不可時はPyTorch実装へフォールバック。
 
 import torch
-from torch import Tensor
-from snn_research.learning_rules.base_rule import PlasticityRule
+import torch.nn as nn
+from typing import Optional, Dict, Any, Tuple
+import logging
 
+# Rust Kernel Import Strategy
+try:
+    import dora_kernel
+    RUST_KERNEL_AVAILABLE = True
+except ImportError:
+    RUST_KERNEL_AVAILABLE = False
 
-class STDPRule(PlasticityRule):
+logger = logging.getLogger(__name__)
+
+class STDP(nn.Module):
     """
-    Spike-Timing Dependent Plasticity with Reward Modulation.
-    
-    設計方針書 4.1準拠:
-    - 時間発展の性質を利用した学習
-    - ドーパミンによる変調 (Reward-modulated)
+    Spike-Timing-Dependent Plasticity (STDP) Learning Rule.
+    Supports Rust acceleration via dora_kernel.
     """
-
-    def __init__(
-        self,
-        learning_rate: float = 0.005,
-        tau_pre: float = 20.0,
-        tau_post: float = 20.0,
-        w_max: float = 5.0,
-        **kwargs: Any
-    ) -> None:
-        super().__init__(**kwargs)
-        self.lr = learning_rate
+    def __init__(self, 
+                 learning_rate: float = 1e-4,
+                 w_min: float = 0.0,
+                 w_max: float = 1.0,
+                 tau_pre: float = 20.0,
+                 tau_post: float = 20.0,
+                 modulatory_factor: float = 1.0):
+        super().__init__()
+        self.learning_rate = learning_rate
+        self.w_min = w_min
+        self.w_max = w_max
         self.tau_pre = tau_pre
         self.tau_post = tau_post
-        self.w_max = w_max
+        self.A_plus = 1.0 * modulatory_factor
+        self.A_minus = 1.05 * modulatory_factor
 
-    def update(
-        self,
-        pre_spikes: Tensor,
-        post_spikes: Tensor,
-        current_weights: Tensor,
-        **kwargs: Any
-    ) -> Tuple[Optional[Tensor], Dict[str, Any]]:
+    def update(self, 
+               weights: torch.Tensor, 
+               pre_spikes: torch.Tensor, 
+               post_spikes: torch.Tensor, 
+               pre_trace: torch.Tensor, 
+               post_trace: torch.Tensor,
+               reward: Optional[float] = None) -> torch.Tensor:
         """
-        MyPy修正: 基底クラスに合わせてシグネチャを修正。
-        local_state は kwargs から取得する。
+        重み更新を実行します。Rustカーネルが利用可能な場合は高速化されます。
         """
-        local_state: Dict[str, Any] = kwargs.get("local_state", {})
-        dt = kwargs.get("dt", 1.0)
-        dopamine = kwargs.get("dopamine_level", 1.0) # デフォルトは等倍
+        # Reward modulation is applied to learning rate temporarily if present
+        effective_lr = self.learning_rate
+        if reward is not None:
+            # Note: Rust implementation currently doesn't support complex tensor reward modulation per sample inside kernel easily.
+            # For simplicity, if scalar reward is provided, we scale LR.
+            # If tensor reward is needed, we fallback to PyTorch or extend Rust kernel later.
+            if isinstance(reward, float) or (isinstance(reward, torch.Tensor) and reward.numel() == 1):
+                effective_lr *= float(reward)
+            else:
+                # Complex reward map: Fallback to PyTorch logic for now to be safe
+                return self._update_pytorch(weights, pre_spikes, post_spikes, pre_trace, post_trace, reward)
 
-        batch_size, in_features = pre_spikes.shape
-        _, out_features = post_spikes.shape
-        device = pre_spikes.device
+        if RUST_KERNEL_AVAILABLE and weights.device.type == 'cpu':
+            return self._update_rust(weights, pre_spikes, post_spikes, pre_trace, post_trace, effective_lr)
+        else:
+            return self._update_pytorch(weights, pre_spikes, post_spikes, pre_trace, post_trace, reward)
 
-        # --- トレースの初期化と更新 ---
-        if "trace_pre" not in local_state:
-            local_state["trace_pre"] = torch.zeros((batch_size, in_features), device=device)
-        if "trace_post" not in local_state:
-            local_state["trace_post"] = torch.zeros((batch_size, out_features), device=device)
+    def _update_rust(self, weights, pre_spikes, post_spikes, pre_trace, post_trace, lr):
+        """Rust Kernel Implementation"""
+        # Convert to numpy (Zero-copy if possible on CPU)
+        w_np = weights.detach().numpy()
+        x_trace_np = pre_trace.detach().numpy()
+        y_trace_np = post_trace.detach().numpy()
+        x_spike_np = pre_spikes.detach().numpy()
+        y_spike_np = post_spikes.detach().numpy()
 
-        # トレース減衰
-        decay_pre = torch.exp(torch.tensor(-dt / self.tau_pre))
-        decay_post = torch.exp(torch.tensor(-dt / self.tau_post))
+        new_w_np = dora_kernel.stdp_weight_update(
+            w_np, x_trace_np, y_trace_np, x_spike_np, y_spike_np,
+            lr, self.A_plus, self.A_minus, self.w_min, self.w_max
+        )
         
-        # 新しいスパイクでトレース増加
-        trace_pre = local_state["trace_pre"] * decay_pre + pre_spikes
-        trace_post = local_state["trace_post"] * decay_post + post_spikes
-        
-        local_state["trace_pre"] = trace_pre
-        local_state["trace_post"] = trace_post
+        return torch.from_numpy(new_w_np).to(weights.device)
 
-        # --- STDP 更新則 ---
-        # LTP: Pre(Trace) -> Post(Spike) : 因果関係あり (Preが先に発火)
-        # LTD: Post(Trace) -> Pre(Spike) : 因果関係逆転 (Postが先に発火)
+    def _update_pytorch(self, weights, pre_spikes, post_spikes, pre_trace, post_trace, reward):
+        """Original PyTorch Implementation"""
+        # 1. LTP
+        delta_w_plus = self.A_plus * torch.matmul(
+            post_spikes.unsqueeze(2), 
+            pre_trace.unsqueeze(1)
+        )
         
-        # LTP: Postが発火した瞬間のPreトレース量に応じて強化
-        # (batch, out, 1) * (batch, 1, in) -> (batch, out, in)
-        delta_w_ltp = torch.matmul(post_spikes.unsqueeze(2), trace_pre.unsqueeze(1))
+        # 2. LTD
+        delta_w_minus = self.A_minus * torch.matmul(
+            post_trace.unsqueeze(2), 
+            pre_spikes.unsqueeze(1)
+        )
         
-        # LTD: Preが発火した瞬間のPostトレース量に応じて減衰
-        # (batch, out, 1) * (batch, 1, in) -> (batch, out, in)
-        delta_w_ltd = torch.matmul(trace_post.unsqueeze(2), pre_spikes.unsqueeze(1))
+        # 3. Integrate
+        delta_w = delta_w_plus - delta_w_minus
+        delta_w = delta_w.mean(dim=0)
         
-        # 全体更新量 (バッチ平均)
-        delta_w = (delta_w_ltp - delta_w_ltd).mean(dim=0)
-        
-        # ドーパミン変調 (R-STDP)
-        # ドーパミンが多いと強化されやすく、少ないと変化が小さい
-        delta_w = delta_w * self.lr * dopamine
+        if reward is not None:
+            if isinstance(reward, float):
+                delta_w = delta_w * reward
+            else:
+                # (Batch, 1, 1) broadcasting
+                delta_w = delta_w * reward.view(-1, 1, 1).mean(dim=0)
 
-        return delta_w, {"stdp_delta": delta_w.abs().mean().item()}
+        new_weights = weights + self.learning_rate * delta_w
+        new_weights = torch.clamp(new_weights, self.w_min, self.w_max)
+        
+        return new_weights
 
-# Backward Compatibility Alias
-STDP = STDPRule
+    def update_trace(self, 
+                     trace: torch.Tensor, 
+                     spikes: torch.Tensor, 
+                     tau: float, 
+                     dt: float = 1.0) -> torch.Tensor:
+        """Trace update (Currently PyTorch only - lightweight)"""
+        decay = torch.exp(torch.tensor(-dt / tau, device=trace.device))
+        new_trace = trace * decay + spikes
+        return new_trace
+
+# 互換性のためのエイリアス
+STDPLearner = STDP
+STDPRule = STDP
