@@ -1,1 +1,0 @@
-MNIST Accuracy: 16.0%

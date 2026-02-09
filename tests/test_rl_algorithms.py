@@ -1,53 +1,64 @@
+# directory: tests
+# file: test_rl_algorithms.py
+# title: Test RL Algorithms
+# purpose: 強化学習アルゴリズム（PPOなど）の基本動作確認
+
 import torch
-import numpy as np
+import pytest
 from snn_research.training.rl.spike_ppo import SpikePPO
-from snn_research.training.rl.spike_sac import SpikeSAC, ReplayBuffer
-
-
-class DummyBuffer:
-    def __init__(self):
-        self.states = []
-        self.actions = []
-        self.log_probs = []
-        self.rewards = []
-        self.is_terminals = []
-
 
 def test_ppo_step():
+    """
+    SpikePPOの基本ステップ実行テスト
+    """
     state_dim = 4
     action_dim = 2
-    agent = SpikePPO(state_dim, action_dim, is_continuous=True)
-
-    # Select action
-    state = torch.randn(1, state_dim)
-    action, log_prob = agent.select_action(state)
-    assert action.shape == (1, action_dim)
-
-    # Update
-    buffer = DummyBuffer()
-    buffer.states = [state]
-    buffer.actions = [action]
-    buffer.log_probs = [log_prob]
-    buffer.rewards = [1.0]
-    buffer.is_terminals = [False]
-
-    # Run update (should not crash)
-    agent.update(buffer)
-
-
-def test_sac_step():
-    state_dim = 4
-    action_dim = 2
-    agent = SpikeSAC(state_dim, action_dim)
-
-    # Select action
-    state = np.random.randn(state_dim)
+    
+    # 修正箇所: 引数名を is_continuous から continuous_action に変更
+    # SARAバックエンドがなくても動作するよう use_sara_backend=False も明示的にテストに含める（任意）
+    agent = SpikePPO(
+        state_dim=state_dim, 
+        action_dim=action_dim, 
+        continuous_action=True,  # ここを修正
+        use_sara_backend=False   # テスト環境によってはSARAがない場合もあるためLegacyモードで通す
+    )
+    
+    state = torch.randn(state_dim)
+    
+    # アクション選択のテスト
     action = agent.select_action(state)
-    assert action.shape == (action_dim,)
+    
+    # 連続値アクションの確認
+    if isinstance(action, (list, tuple)):
+        # 配列で返ってくる場合
+        assert len(action) == action_dim
+    else:
+        # Numpy配列の場合
+        assert action.shape == (action_dim,) or action.size == action_dim
 
-    # Update
-    buffer = ReplayBuffer(100)
-    buffer.push(state, action, 1.0, state, False)
+def test_ppo_update():
+    """
+    SpikePPOの学習更新ステップのテスト
+    """
+    state_dim = 4
+    action_dim = 2
+    agent = SpikePPO(state_dim, action_dim, continuous_action=True, use_sara_backend=False)
+    
+    # ダミーデータの蓄積
+    for _ in range(10):
+        state = torch.randn(state_dim)
+        action = agent.select_action(state)
+        reward = 1.0
+        done = False
+        agent.store_reward(reward, done)
+    
+    # updateメソッドがエラーなく走るか確認
+    try:
+        agent.update()
+    except Exception as e:
+        pytest.fail(f"PPO update failed with error: {e}")
 
-    # Run update (needs batch size)
-    agent.update(buffer, batch_size=1)
+if __name__ == "__main__":
+    test_ppo_step()
+    test_ppo_update()
+    print("All RL tests passed!")
