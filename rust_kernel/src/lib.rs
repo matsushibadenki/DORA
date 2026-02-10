@@ -1,7 +1,7 @@
 // directory: rust_kernel/src
 // file: lib.rs
 // title: DORA Kernel (Rust Backend)
-// description: LIFニューロン計算に加え、STDP学習則の高速計算ロジックを追加。
+// description: R-STDP (Reward-modulated STDP) を実装。reward引数を追加し、学習の方向と強度を制御します。
 
 use pyo3::prelude::*;
 use ndarray::prelude::*;
@@ -40,18 +40,12 @@ fn lif_update_step<'py>(
     ))
 }
 
-/// STDP Weight Update Step
+/// R-STDP Weight Update Step
 /// 
-/// Python側からの入力:
-///     weights: (Out, In) 現在の重み
-///     pre_trace: (Batch, In) 前ニューロンのトレース
-///     post_trace: (Batch, Out) 後ニューロンのトレース
-///     pre_spikes: (Batch, In) 前ニューロンのスパイク
-///     post_spikes: (Batch, Out) 後ニューロンのスパイク
-///     ...params...
-///
-/// 戻り値:
-///     new_weights: (Out, In) 更新後の重み
+/// 報酬変調(Reward Modulation)を追加。
+/// reward > 0: 強化学習 (LTP/LTDを適用)
+/// reward < 0: 罰 (反転学習、または抑制)
+/// reward = 0: 学習なし
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn stdp_weight_update<'py>(
@@ -66,23 +60,23 @@ fn stdp_weight_update<'py>(
     a_minus: f32,
     w_min: f32,
     w_max: f32,
+    reward: f32, // Added: Reward Signal
 ) -> PyResult<&'py PyArray2<f32>> {
     let w = weights.as_array();
-    let x_trace = pre_trace.as_array();   // (B, In)
-    let y_trace = post_trace.as_array();  // (B, Out)
-    let x_spike = pre_spikes.as_array();  // (B, In)
-    let y_spike = post_spikes.as_array(); // (B, Out)
+    let x_trace = pre_trace.as_array();
+    let y_trace = post_trace.as_array();
+    let x_spike = pre_spikes.as_array();
+    let y_spike = post_spikes.as_array();
 
     let batch_size = x_trace.shape()[0] as f32;
 
     // 1. Calculate Delta W terms via Matrix Multiplication
-    // LTP Term: Y_spike^T (Out, B) @ X_trace (B, In) -> (Out, In)
+    // 行列演算を使用していますが、これはバッチ処理の並列化のためであり、
+    // アルゴリズム的には局所的なHepp則の総和です。
     let dw_plus = y_spike.t().dot(&x_trace);
-
-    // LTD Term: Y_trace^T (Out, B) @ X_spike (B, In) -> (Out, In)
     let dw_minus = y_trace.t().dot(&x_spike);
 
-    // 2. Compute New Weights (Parallelized element-wise op)
+    // 2. Compute New Weights with Reward Modulation
     let mut new_w = Array2::<f32>::zeros(w.raw_dim());
 
     Zip::from(&mut new_w)
@@ -90,20 +84,19 @@ fn stdp_weight_update<'py>(
         .and(&dw_plus)
         .and(&dw_minus)
         .par_for_each(|nw, &cw, &p, &m| {
-            // dW = (A+ * dW+ - A- * dW-) / Batch
-            let delta = (a_plus * p - a_minus * m) / batch_size;
+            // R-STDP Rule:
+            // Delta = (LTP - LTD) * Reward
+            // 報酬が正なら通常のSTDP、負なら逆効果（または抑制）
+            let raw_delta = (a_plus * p - a_minus * m) / batch_size;
+            let modulated_delta = raw_delta * reward;
             
-            // W_new = clamp(W + lr * delta)
-            let updated = cw + learning_rate * delta;
-            
-            // Clamp
+            let updated = cw + learning_rate * modulated_delta;
             *nw = updated.max(w_min).min(w_max);
         });
 
     Ok(new_w.into_pyarray(py))
 }
 
-/// DORA Kernel Module Definition
 #[pymodule]
 fn dora_kernel(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lif_update_step, m)?)?;
